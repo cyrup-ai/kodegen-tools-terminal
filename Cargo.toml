@@ -27,8 +27,6 @@ short_description = "Memory-efficient, Blazing-Fast, MCP tools for code generati
 [dependencies]
 kodegen_mcp_schema = { version = "0.1" }
 kodegen_mcp_tool = { version = "0.1" }
-kodegen_tools_config = { version = "0.1" }
-kodegen_utils = { version = "0.1" }
 
 # SSE server core - for binary
 kodegen_server_http = { version = "0.1" }
@@ -42,12 +40,6 @@ tokio = { version = "1", features = ["full"] }
 # Serialization - for Args and responses
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Schema generation - for JsonSchema derive
-schemars = "1"
-
-# Synchronization primitives - for managers' state management
-parking_lot = "0.12"
 
 # Pattern matching - for command validation and REPL prompt detection
 regex = "1"
@@ -64,10 +56,7 @@ anyhow = "1"
 # PTY and VT100 terminal emulation dependencies (from cyterm)
 bytes = "1"
 portable-pty = "0.9"
-tokio-stream = "0.1"
 vt100 = "0.16"
-uuid = { version = "1", features = ["serde", "v4"] }
-once_cell = "1"
 
 [dev-dependencies]
 kodegen_mcp_client = { version = "0.1"  }
