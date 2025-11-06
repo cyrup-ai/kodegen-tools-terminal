@@ -17,10 +17,11 @@ impl Terminal {
     ///
     /// # Example
     /// ```no_run
+    /// # use kodegen_tools_terminal::pty::Terminal;
     /// # use std::error::Error;
     /// # async fn example() -> Result<(), Box<dyn Error>> {
     /// let mut term = Terminal::builder().build();
-    /// let handle = term.exec("ls -la")?;
+    /// let handle = term.exec("ls -la").await?;
     /// let screen = handle.await?;
     /// println!("{}", screen.contents());
     /// # Ok(())
