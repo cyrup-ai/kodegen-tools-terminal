@@ -7,11 +7,11 @@ use kodegen_mcp_client::{KodegenClient, KodegenConnection, create_streamable_cli
 use rmcp::model::{CallToolResult, ServerInfo};
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::{Mutex as StdMutex, OnceLock};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use std::sync::Arc;
 
 /// Browser HTTP server configuration
 const HTTP_PORT: u16 = 30451;
@@ -221,7 +221,10 @@ pub async fn connect_to_local_http_server() -> Result<(KodegenConnection, Server
 
     cleanup_port(HTTP_PORT).await.ok();
 
-    eprintln!("🚀 Starting {} HTTP server on port {}...", BINARY_NAME, HTTP_PORT);
+    eprintln!(
+        "🚀 Starting {} HTTP server on port {}...",
+        BINARY_NAME, HTTP_PORT
+    );
 
     let child = cmd.spawn().context("Failed to spawn HTTP server process")?;
     let server_handle = ServerHandle::new(child);

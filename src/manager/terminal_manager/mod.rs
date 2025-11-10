@@ -18,23 +18,19 @@ use std::sync::atomic::AtomicU32;
 use tokio::sync::Mutex;
 
 // Submodule declarations
-mod constants;
-mod types;
-mod repl_detection;
-mod session_lifecycle;
-mod session_io;
-mod session_control;
-mod session_queries;
 mod cleanup;
+mod constants;
+mod repl_detection;
+mod session_control;
+mod session_io;
+mod session_lifecycle;
+mod session_queries;
+mod types;
 
 // Re-export public types
 pub use types::{
-    ActiveTerminalSession,
-    CompletedTerminalSession,
-    TerminalCommandResult,
-    TerminalMetrics,
-    TerminalOutputResponse,
-    TerminalSessionInfo,
+    ActiveTerminalSession, CompletedTerminalSession, TerminalCommandResult, TerminalMetrics,
+    TerminalOutputResponse, TerminalSessionInfo,
 };
 
 // ============================================================================

@@ -3,7 +3,7 @@
 //! Serves terminal tools via HTTP/HTTPS transport using kodegen_server_http.
 
 use anyhow::Result;
-use kodegen_server_http::{run_http_server, Managers, RouterSet, register_tool};
+use kodegen_server_http::{Managers, RouterSet, register_tool, run_http_server};
 use rmcp::handler::server::router::{prompt::PromptRouter, tool::ToolRouter};
 use std::sync::Arc;
 
@@ -12,53 +12,53 @@ async fn main() -> Result<()> {
     run_http_server("terminal", |config, _tracker| {
         let config = config.clone();
         Box::pin(async move {
-        let tool_router = ToolRouter::new();
-        let prompt_router = PromptRouter::new();
-        let managers = Managers::new();
+            let tool_router = ToolRouter::new();
+            let prompt_router = PromptRouter::new();
+            let managers = Managers::new();
 
-        // Create managers for terminal tools
-        let terminal_manager = Arc::new(kodegen_tools_terminal::TerminalManager::new());
-        let command_manager =
-            kodegen_tools_terminal::CommandManager::new(config.get_blocked_commands());
+            // Create managers for terminal tools
+            let terminal_manager = Arc::new(kodegen_tools_terminal::TerminalManager::new());
+            let command_manager =
+                kodegen_tools_terminal::CommandManager::new(config.get_blocked_commands());
 
-        // Register all 5 terminal tools
-        let (tool_router, prompt_router) = register_tool(
-            tool_router,
-            prompt_router,
-            kodegen_tools_terminal::StartTerminalCommandTool::new(
-                terminal_manager.clone(),
-                command_manager,
-            ),
-        );
+            // Register all 5 terminal tools
+            let (tool_router, prompt_router) = register_tool(
+                tool_router,
+                prompt_router,
+                kodegen_tools_terminal::StartTerminalCommandTool::new(
+                    terminal_manager.clone(),
+                    command_manager,
+                ),
+            );
 
-        let (tool_router, prompt_router) = register_tool(
-            tool_router,
-            prompt_router,
-            kodegen_tools_terminal::ReadTerminalOutputTool::new(terminal_manager.clone()),
-        );
+            let (tool_router, prompt_router) = register_tool(
+                tool_router,
+                prompt_router,
+                kodegen_tools_terminal::ReadTerminalOutputTool::new(terminal_manager.clone()),
+            );
 
-        let (tool_router, prompt_router) = register_tool(
-            tool_router,
-            prompt_router,
-            kodegen_tools_terminal::SendTerminalInputTool::new(terminal_manager.clone()),
-        );
+            let (tool_router, prompt_router) = register_tool(
+                tool_router,
+                prompt_router,
+                kodegen_tools_terminal::SendTerminalInputTool::new(terminal_manager.clone()),
+            );
 
-        let (tool_router, prompt_router) = register_tool(
-            tool_router,
-            prompt_router,
-            kodegen_tools_terminal::StopTerminalCommandTool::new(terminal_manager.clone()),
-        );
+            let (tool_router, prompt_router) = register_tool(
+                tool_router,
+                prompt_router,
+                kodegen_tools_terminal::StopTerminalCommandTool::new(terminal_manager.clone()),
+            );
 
-        let (tool_router, prompt_router) = register_tool(
-            tool_router,
-            prompt_router,
-            kodegen_tools_terminal::ListTerminalCommandsTool::new(terminal_manager.clone()),
-        );
+            let (tool_router, prompt_router) = register_tool(
+                tool_router,
+                prompt_router,
+                kodegen_tools_terminal::ListTerminalCommandsTool::new(terminal_manager.clone()),
+            );
 
-        // CRITICAL: Start cleanup task after all tools are registered
-        terminal_manager.start_cleanup_task();
+            // CRITICAL: Start cleanup task after all tools are registered
+            terminal_manager.start_cleanup_task();
 
-        Ok(RouterSet::new(tool_router, prompt_router, managers))
+            Ok(RouterSet::new(tool_router, prompt_router, managers))
         })
     })
     .await

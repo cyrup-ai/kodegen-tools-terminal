@@ -1,7 +1,7 @@
 use crate::manager::TerminalManager;
+use kodegen_mcp_schema::terminal::{ListTerminalCommandsArgs, ListTerminalCommandsPromptArgs};
 use kodegen_mcp_tool::Tool;
 use kodegen_mcp_tool::error::McpError;
-use kodegen_mcp_schema::terminal::{ListTerminalCommandsArgs, ListTerminalCommandsPromptArgs};
 use rmcp::model::{PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
 use serde_json::{Value, json};
 use std::sync::Arc;

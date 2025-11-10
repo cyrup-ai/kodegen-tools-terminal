@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -30,6 +30,8 @@ macos = "public.app-category.developer-tools"
 [dependencies]
 kodegen_mcp_schema = { version = "0.1" }
 kodegen_mcp_tool = { version = "0.1" }
+kodegen_tools_config = { version = "0.1" }
+kodegen_utils = { version = "0.1" }
 
 # SSE server core - for binary
 kodegen_server_http = { version = "0.1" }
@@ -52,9 +54,13 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Logging - for debug/error/warn/info in managers
 log = "0.4"
+env_logger = "0.11"
 
 # Error handling - for error conversion in terminal_manager
 anyhow = "1"
+
+# TLS support - for embedded server mode
+rustls = "0.23"
 
 # PTY and VT100 terminal emulation dependencies (from cyterm)
 bytes = "1"

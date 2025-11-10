@@ -14,12 +14,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting terminal tools example");
 
     // Connect to kodegen server with terminal category
-    let (conn, mut server) =
-        common::connect_to_local_http_server().await?;
+    let (conn, mut server) = common::connect_to_local_http_server().await?;
 
     // Wrap client with logging
-    let workspace_root = common::find_workspace_root()
-        .context("Failed to find workspace root")?;
+    let workspace_root = common::find_workspace_root().context("Failed to find workspace root")?;
     let log_path = workspace_root.join("tmp/mcp-client/terminal.log");
     let client = common::LoggingClient::new(conn.client(), log_path)
         .await
