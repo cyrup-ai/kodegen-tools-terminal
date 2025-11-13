@@ -2,7 +2,7 @@ use crate::manager::TerminalManager;
 use kodegen_mcp_schema::terminal::{ListTerminalCommandsArgs, ListTerminalCommandsPromptArgs};
 use kodegen_mcp_tool::Tool;
 use kodegen_mcp_tool::error::McpError;
-use rmcp::model::{PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
+use rmcp::model::{Content, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ impl Tool for ListTerminalCommandsTool {
     type PromptArgs = ListTerminalCommandsPromptArgs;
 
     fn name() -> &'static str {
-        "list_terminal_commands"
+        "terminal_list_commands"
     }
 
     fn description() -> &'static str {
@@ -52,44 +52,59 @@ impl Tool for ListTerminalCommandsTool {
         false
     }
 
-    async fn execute(&self, _args: Self::Args) -> Result<Value, McpError> {
+    async fn execute(&self, _args: Self::Args) -> Result<Vec<Content>, McpError> {
         // Get active sessions
         let active_sessions = self.terminal_manager.list_active_sessions();
 
-        // Format the response
+        let mut contents = Vec::new();
+
+        // HUMAN VIEW
         if active_sessions.is_empty() {
-            Ok(json!({
-                "sessions": [],
-                "count": 0,
-                "message": "No active command sessions. All commands have completed."
-            }))
+            contents.push(Content::text("📋 No active terminal sessions"));
         } else {
-            // Convert runtime from milliseconds to seconds for better readability
-            let formatted_sessions: Vec<Value> = active_sessions
-                .iter()
-                .map(|session| {
-                    // Convert runtime to seconds for display
-                    // Runtime < 2^52 ms for all realistic sessions
-                    let runtime_s = (session.runtime as f64) / 1000.0;
+            let summary = format!(
+                "📋 {} Active Terminal Session{}",
+                active_sessions.len(),
+                if active_sessions.len() == 1 { "" } else { "s" }
+            );
+            contents.push(Content::text(summary));
+        }
 
-                    json!({
-                        "pid": session.pid,
-                        "is_blocked": session.is_blocked,
-                        "runtime_ms": session.runtime,
-                        "runtime_s": format!("{runtime_s:.2}"),
-                    })
+        // JSON METADATA (preserve all existing fields)
+        let formatted_sessions: Vec<Value> = active_sessions
+            .iter()
+            .map(|session| {
+                // Convert runtime to seconds for display
+                // Runtime < 2^52 ms for all realistic sessions
+                let runtime_s = (session.runtime as f64) / 1000.0;
+
+                json!({
+                    "pid": session.pid,
+                    "is_blocked": session.is_blocked,
+                    "runtime_ms": session.runtime,
+                    "runtime_s": format!("{runtime_s:.2}"),
                 })
-                .collect();
+            })
+            .collect();
 
-            Ok(json!({
-                "sessions": formatted_sessions,
-                "count": active_sessions.len(),
-                "message": format!(
-                    "{} active session(s). Use read_terminal_output(pid) to get output or stop_terminal_command(pid) to stop.",
+        let metadata = json!({
+            "sessions": formatted_sessions,
+            "count": active_sessions.len(),
+            "message": if active_sessions.is_empty() {
+                "No active command sessions. All commands have completed.".to_string()
+            } else {
+                format!(
+                    "{} active session(s). Use terminal_read_output(pid) to get output or terminal_stop_command(pid) to stop.",
                     active_sessions.len()
                 )
-            }))
-        }
+            }
+        });
+
+        let json_str = serde_json::to_string_pretty(&metadata)
+            .unwrap_or_else(|_| "{}".to_string());
+        contents.push(Content::text(json_str));
+
+        Ok(contents)
     }
 
     fn prompt_arguments() -> Vec<PromptArgument> {

@@ -2,8 +2,8 @@ use crate::manager::TerminalManager;
 use kodegen_mcp_schema::terminal::{SendTerminalInputArgs, SendTerminalInputPromptArgs};
 use kodegen_mcp_tool::Tool;
 use kodegen_mcp_tool::error::McpError;
-use rmcp::model::{PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
-use serde_json::{Value, json};
+use rmcp::model::{Content, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
+use serde_json::json;
 use std::sync::Arc;
 
 // ============================================================================
@@ -31,7 +31,7 @@ impl Tool for SendTerminalInputTool {
     type PromptArgs = SendTerminalInputPromptArgs;
 
     fn name() -> &'static str {
-        "send_terminal_input"
+        "terminal_send_input"
     }
 
     fn description() -> &'static str {
@@ -48,18 +48,40 @@ impl Tool for SendTerminalInputTool {
         false // Each input execution has cumulative effect in REPL state
     }
 
-    async fn execute(&self, args: Self::Args) -> Result<Value, McpError> {
+    async fn execute(&self, args: Self::Args) -> Result<Vec<Content>, McpError> {
         let success = self
             .terminal_manager
             .send_input(args.pid, &args.input, args.append_newline)
             .await?;
 
-        Ok(json!({
+        let mut contents = Vec::new();
+
+        // HUMAN VIEW
+        let summary = if success {
+            format!(
+                "⌨️  Input sent to PID {}\nCommand: {}\nNewline: {}",
+                args.pid,
+                args.input,
+                if args.append_newline { "✓" } else { "✗" }
+            )
+        } else {
+            format!("⚠️  Failed to send input to PID {}", args.pid)
+        };
+        contents.push(Content::text(summary));
+
+        // JSON METADATA
+        let metadata = json!({
             "success": success,
             "pid": args.pid,
             "input_sent": args.input,
             "newline_appended": args.append_newline
-        }))
+        });
+
+        let json_str = serde_json::to_string_pretty(&metadata)
+            .unwrap_or_else(|_| "{}".to_string());
+        contents.push(Content::text(json_str));
+
+        Ok(contents)
     }
 
     async fn prompt(&self, _args: Self::PromptArgs) -> Result<Vec<PromptMessage>, McpError> {

@@ -2,8 +2,8 @@ use crate::manager::{CommandManager, TerminalManager};
 use kodegen_mcp_schema::terminal::{StartTerminalCommandArgs, StartTerminalCommandPromptArgs};
 use kodegen_mcp_tool::Tool;
 use kodegen_mcp_tool::error::McpError;
-use rmcp::model::{PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
-use serde_json::{Value, json};
+use rmcp::model::{Content, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
+use serde_json::json;
 use std::sync::Arc;
 
 // ============================================================================
@@ -35,7 +35,7 @@ impl Tool for StartTerminalCommandTool {
     type PromptArgs = StartTerminalCommandPromptArgs;
 
     fn name() -> &'static str {
-        "start_terminal_command"
+        "terminal_start_command"
     }
 
     fn description() -> &'static str {
@@ -56,7 +56,7 @@ impl Tool for StartTerminalCommandTool {
         true
     }
 
-    async fn execute(&self, args: Self::Args) -> Result<Value, McpError> {
+    async fn execute(&self, args: Self::Args) -> Result<Vec<Content>, McpError> {
         // Validate command against blocked list
         let is_allowed = self.command_manager.validate_command(&args.command);
         if !is_allowed {
@@ -77,26 +77,65 @@ impl Tool for StartTerminalCommandTool {
             .await
             .map_err(McpError::Other)?;
 
-        // Format response
-        Ok(json!({
+        let mut contents = Vec::new();
+
+        // HUMAN VIEW - LAST 3 LINES OF INITIAL OUTPUT
+        let output_lines: Vec<&str> = result.output.lines().collect();
+        let last_3: Vec<&str> = output_lines
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .copied()
+            .collect();
+
+        let summary = if result.ready_for_input {
+            format!(
+                "🚀 REPL Started • PID {}\nReady for input\nLast output:\n{}",
+                result.pid,
+                last_3.join("\n")
+            )
+        } else if result.is_blocked {
+            format!(
+                "⏳ Command Running • PID {}\nUse terminal_read_output to get more\nLast output:\n{}",
+                result.pid,
+                last_3.join("\n")
+            )
+        } else {
+            format!(
+                "✓ Command Complete • PID {}\nOutput:\n{}",
+                result.pid,
+                last_3.join("\n")
+            )
+        };
+        contents.push(Content::text(summary));
+
+        // JSON METADATA (full output preserved)
+        let metadata = json!({
             "pid": result.pid,
             "output": result.output,
             "is_blocked": result.is_blocked,
             "ready_for_input": result.ready_for_input,
             "message": if result.ready_for_input {
                 format!(
-                    "REPL ready for input (PID: {}). Use send_input({{\"pid\": {}, \"input\": \"...\"}}) to interact.",
+                    "REPL ready for input (PID: {}). Use terminal_send_input({{\"pid\": {}, \"input\": \"...\"}}) to interact.",
                     result.pid, result.pid
                 )
             } else if result.is_blocked {
                 format!(
-                    "Command still running (PID: {}). Use read_output({{\"pid\": {}}}) to get more output.",
+                    "Command still running (PID: {}). Use terminal_read_output({{\"pid\": {}}}) to get more output.",
                     result.pid, result.pid
                 )
             } else {
                 "Command completed.".to_string()
             }
-        }))
+        });
+
+        let json_str = serde_json::to_string_pretty(&metadata)
+            .unwrap_or_else(|_| "{}".to_string());
+        contents.push(Content::text(json_str));
+
+        Ok(contents)
     }
 
     fn prompt_arguments() -> Vec<PromptArgument> {

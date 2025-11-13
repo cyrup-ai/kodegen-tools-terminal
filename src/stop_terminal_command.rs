@@ -2,8 +2,8 @@ use crate::manager::TerminalManager;
 use kodegen_mcp_schema::terminal::{StopTerminalCommandArgs, StopTerminalCommandPromptArgs};
 use kodegen_mcp_tool::Tool;
 use kodegen_mcp_tool::error::McpError;
-use rmcp::model::{PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
-use serde_json::{Value, json};
+use rmcp::model::{Content, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
+use serde_json::json;
 use std::sync::Arc;
 
 // ============================================================================
@@ -31,7 +31,7 @@ impl Tool for StopTerminalCommandTool {
     type PromptArgs = StopTerminalCommandPromptArgs;
 
     fn name() -> &'static str {
-        "stop_terminal_command"
+        "terminal_stop_command"
     }
 
     fn description() -> &'static str {
@@ -52,15 +52,31 @@ impl Tool for StopTerminalCommandTool {
         false
     }
 
-    async fn execute(&self, args: Self::Args) -> Result<Value, McpError> {
+    async fn execute(&self, args: Self::Args) -> Result<Vec<Content>, McpError> {
         // Now force_terminate returns Result, not bool
         self.terminal_manager.force_terminate(args.pid).await?;
 
-        Ok(json!({
+        let mut contents = Vec::new();
+
+        // HUMAN VIEW
+        let summary = format!(
+            "🛑 Process Terminated\nPID: {}\nStatus: Graceful SIGTERM → Force SIGKILL",
+            args.pid
+        );
+        contents.push(Content::text(summary));
+
+        // JSON METADATA
+        let metadata = json!({
             "pid": args.pid,
             "success": true,
             "message": format!("Successfully terminated process {}", args.pid)
-        }))
+        });
+
+        let json_str = serde_json::to_string_pretty(&metadata)
+            .unwrap_or_else(|_| "{}".to_string());
+        contents.push(Content::text(json_str));
+
+        Ok(contents)
     }
 
     fn prompt_arguments() -> Vec<PromptArgument> {

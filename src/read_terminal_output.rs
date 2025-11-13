@@ -2,7 +2,7 @@ use crate::manager::TerminalManager;
 use kodegen_mcp_schema::terminal::{ReadTerminalOutputArgs, ReadTerminalOutputPromptArgs};
 use kodegen_mcp_tool::Tool;
 use kodegen_mcp_tool::error::McpError;
-use rmcp::model::{PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
+use rmcp::model::{Content, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ impl Tool for ReadTerminalOutputTool {
     type PromptArgs = ReadTerminalOutputPromptArgs;
 
     fn name() -> &'static str {
-        "read_terminal_output"
+        "terminal_read_output"
     }
 
     fn description() -> &'static str {
@@ -56,7 +56,7 @@ impl Tool for ReadTerminalOutputTool {
         false
     }
 
-    async fn execute(&self, args: Self::Args) -> Result<Value, McpError> {
+    async fn execute(&self, args: Self::Args) -> Result<Vec<Content>, McpError> {
         let response = self
             .terminal_manager
             .get_output(args.pid, args.offset, args.length)
@@ -65,7 +65,31 @@ impl Tool for ReadTerminalOutputTool {
                 McpError::InvalidArguments(format!("Terminal session {} not found", args.pid))
             })?;
 
-        // Transform lines from Vec<String> to Vec<{line: usize, output: String}>
+        let mut contents = Vec::new();
+
+        // HUMAN VIEW - ONLY LAST 3 LINES WITH ANSI CODES PRESERVED
+        let last_3_lines: Vec<String> = response
+            .lines
+            .iter()
+            .rev()
+            .take(3)
+            .rev()
+            .cloned()
+            .collect();
+
+        let summary = if last_3_lines.is_empty() {
+            format!("📟 PID {} • No output yet", response.pid)
+        } else {
+            format!(
+                "📟 PID {} • Last {} lines:\n{}",
+                response.pid,
+                last_3_lines.len(),
+                last_3_lines.join("\n")
+            )
+        };
+        contents.push(Content::text(summary));
+
+        // JSON METADATA (preserve all existing fields for pagination)
         let start_line = if args.offset < 0 {
             response.total_lines.saturating_sub(response.lines.len())
         } else {
@@ -84,7 +108,7 @@ impl Tool for ReadTerminalOutputTool {
             })
             .collect();
 
-        Ok(json!({
+        let metadata = json!({
             "pid": response.pid,
             "lines": formatted_lines,
             "total_lines": response.total_lines,
@@ -93,7 +117,13 @@ impl Tool for ReadTerminalOutputTool {
             "exit_code": response.exit_code,
             "has_more": response.has_more,
             "buffer_truncated": response.buffer_truncated,
-        }))
+        });
+
+        let json_str = serde_json::to_string_pretty(&metadata)
+            .unwrap_or_else(|_| "{}".to_string());
+        contents.push(Content::text(json_str));
+
+        Ok(contents)
     }
 
     fn prompt_arguments() -> Vec<PromptArgument> {
