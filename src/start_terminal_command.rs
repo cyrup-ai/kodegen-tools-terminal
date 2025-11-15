@@ -35,7 +35,7 @@ impl Tool for StartTerminalCommandTool {
     type PromptArgs = StartTerminalCommandPromptArgs;
 
     fn name() -> &'static str {
-        "terminal_start_command"
+        kodegen_mcp_schema::terminal::TERMINAL_START_COMMAND
     }
 
     fn description() -> &'static str {
@@ -95,7 +95,7 @@ impl Tool for StartTerminalCommandTool {
                 result.pid,
                 last_3.join("\n")
             )
-        } else if result.is_blocked {
+        } else if result.still_running {
             format!(
                 "⏳ Command Running • PID {}\nUse terminal_read_output to get more\nLast output:\n{}",
                 result.pid,
@@ -114,14 +114,14 @@ impl Tool for StartTerminalCommandTool {
         let metadata = json!({
             "pid": result.pid,
             "output": result.output,
-            "is_blocked": result.is_blocked,
+            "still_running": result.still_running,
             "ready_for_input": result.ready_for_input,
             "message": if result.ready_for_input {
                 format!(
                     "REPL ready for input (PID: {}). Use terminal_send_input({{\"pid\": {}, \"input\": \"...\"}}) to interact.",
                     result.pid, result.pid
                 )
-            } else if result.is_blocked {
+            } else if result.still_running {
                 format!(
                     "Command still running (PID: {}). Use terminal_read_output({{\"pid\": {}}}) to get more output.",
                     result.pid, result.pid

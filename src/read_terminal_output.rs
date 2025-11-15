@@ -31,7 +31,7 @@ impl Tool for ReadTerminalOutputTool {
     type PromptArgs = ReadTerminalOutputPromptArgs;
 
     fn name() -> &'static str {
-        "terminal_read_output"
+        kodegen_mcp_schema::terminal::TERMINAL_READ_OUTPUT
     }
 
     fn description() -> &'static str {
@@ -67,25 +67,20 @@ impl Tool for ReadTerminalOutputTool {
 
         let mut contents = Vec::new();
 
-        // HUMAN VIEW - ONLY LAST 3 LINES WITH ANSI CODES PRESERVED
-        let last_3_lines: Vec<String> = response
+        // HUMAN VIEW - ONLY LAST 4 LINES WITH ANSI CODES PRESERVED
+        let last_4_lines: Vec<String> = response
             .lines
             .iter()
             .rev()
-            .take(3)
+            .take(4)
             .rev()
             .cloned()
             .collect();
 
-        let summary = if last_3_lines.is_empty() {
-            format!("📟 PID {} • No output yet", response.pid)
+        let summary = if last_4_lines.is_empty() {
+            "No output yet".to_string()
         } else {
-            format!(
-                "📟 PID {} • Last {} lines:\n{}",
-                response.pid,
-                last_3_lines.len(),
-                last_3_lines.join("\n")
-            )
+            last_4_lines.join("\n")
         };
         contents.push(Content::text(summary));
 

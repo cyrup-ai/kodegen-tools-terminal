@@ -2,7 +2,7 @@ mod common;
 
 use anyhow::Context;
 use kodegen_mcp_client::responses::StartTerminalCommandResponse;
-use kodegen_mcp_client::tools;
+use kodegen_mcp_schema::terminal::*;
 use serde_json::json;
 use tracing::{error, info};
 
@@ -45,21 +45,21 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // 1. START_TERMINAL_COMMAND - Start an echo command
         info!("1. Testing start_terminal_command");
         let response: StartTerminalCommandResponse = client.call_tool_typed(
-            tools::START_TERMINAL_COMMAND,
+            TERMINAL_START_COMMAND,
             json!({
                 "command": "echo 'Hello from terminal'",
                 "initial_delay_ms": 5000
             })
         ).await?;
-        
+
         let pid = response.pid;
         pids.push(pid);
         info!("Started command with PID: {}", pid);
-        
+
         // 2. READ_TERMINAL_OUTPUT - Read command output
         info!("2. Testing read_terminal_output");
         match client.call_tool(
-            tools::READ_TERMINAL_OUTPUT,
+            TERMINAL_READ_OUTPUT,
             json!({ "pid": pid })
         ).await {
             Ok(result) => info!("Read output: {:?}", result),
@@ -70,18 +70,18 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         info!("3. Testing send_terminal_input");
         // Start an interactive command first
         let interactive_response: StartTerminalCommandResponse = client.call_tool_typed(
-            tools::START_TERMINAL_COMMAND,
+            TERMINAL_START_COMMAND,
             json!({
                 "command": "cat"  // cat waits for input - uses default 100ms initial_delay_ms
             })
         ).await?;
-        
+
         let interactive_pid = interactive_response.pid;
         pids.push(interactive_pid);
         info!("Started interactive command with PID: {}", interactive_pid);
-        
+
         match client.call_tool(
-            tools::SEND_TERMINAL_INPUT,
+            TERMINAL_SEND_INPUT,
             json!({
                 "pid": interactive_pid,
                 "input": "test input\n"
@@ -94,7 +94,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // 4. STOP_TERMINAL_COMMAND - Stop the interactive command
         info!("4. Testing stop_terminal_command");
         match client.call_tool(
-            tools::STOP_TERMINAL_COMMAND,
+            TERMINAL_STOP_COMMAND,
             json!({ "pid": interactive_pid })
         ).await {
             Ok(result) => info!("Stopped command: {:?}", result),
@@ -103,7 +103,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
 
         // 5. LIST_TERMINAL_COMMANDS - List all active sessions
         info!("5. Testing list_terminal_commands");
-        match client.call_tool(tools::LIST_TERMINAL_COMMANDS, json!({})).await {
+        match client.call_tool(TERMINAL_LIST_COMMANDS, json!({})).await {
             Ok(result) => info!("Active sessions: {:?}", result),
             Err(e) => error!("Failed to list sessions: {}", e),
         }
@@ -111,12 +111,12 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // 6. PTY FUNCTIONALITY TEST - Run top and poll multiple times to see dynamic updates
         info!("\n6. Testing pseudo-terminal with top (dynamic output)");
         let top_response: StartTerminalCommandResponse = client.call_tool_typed(
-            tools::START_TERMINAL_COMMAND,
+            TERMINAL_START_COMMAND,
             json!({
                 "command": "top -l 3 -s 1"  // 3 samples, 1 second apart - uses default 100ms initial_delay_ms
             })
         ).await?;
-        
+
         let top_pid = top_response.pid;
         pids.push(top_pid);
         info!("Started top with PID: {}", top_pid);
@@ -125,7 +125,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         info!("   Poll 1 (after 1 second):");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         match client.call_tool(
-            tools::READ_TERMINAL_OUTPUT,
+            TERMINAL_READ_OUTPUT,
             json!({ "pid": top_pid })
         ).await {
             Ok(result) => {
@@ -142,7 +142,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         info!("   Poll 2 (after 2 seconds):");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         match client.call_tool(
-            tools::READ_TERMINAL_OUTPUT,
+            TERMINAL_READ_OUTPUT,
             json!({ "pid": top_pid })
         ).await {
             Ok(result) => {
@@ -159,7 +159,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         info!("   Poll 3 (after 3 seconds):");
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         match client.call_tool(
-            tools::READ_TERMINAL_OUTPUT,
+            TERMINAL_READ_OUTPUT,
             json!({ "pid": top_pid })
         ).await {
             Ok(result) => {
@@ -175,7 +175,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // Kill top process
         info!("   Stopping top process:");
         match client.call_tool(
-            tools::STOP_TERMINAL_COMMAND,
+            TERMINAL_STOP_COMMAND,
             json!({ "pid": top_pid })
         ).await {
             Ok(result) => info!("   Stopped top: {:?}", result),
@@ -185,12 +185,12 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // 7. MULTI-STEP SESSION TEST - Interactive bash session with command history
         info!("\n7. Testing multi-step interactive session (bash with history)");
         let bash_response: StartTerminalCommandResponse = client.call_tool_typed(
-            tools::START_TERMINAL_COMMAND,
+            TERMINAL_START_COMMAND,
             json!({
                 "command": "bash"  // Uses default 100ms initial_delay_ms
             })
         ).await?;
-        
+
         let bash_pid = bash_response.pid;
         pids.push(bash_pid);
         info!("Started bash session with PID: {}", bash_pid);
@@ -201,7 +201,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // Command 1: echo something
         info!("   Sending command 1: echo 'First command'");
         match client.call_tool(
-            tools::SEND_TERMINAL_INPUT,
+            TERMINAL_SEND_INPUT,
             json!({
                 "pid": bash_pid,
                 "input": "echo 'First command'\n"
@@ -217,7 +217,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // Read output from command 1
         info!("   Reading output from command 1:");
         match client.call_tool(
-            tools::READ_TERMINAL_OUTPUT,
+            TERMINAL_READ_OUTPUT,
             json!({ "pid": bash_pid })
         ).await {
             Ok(result) => {
@@ -232,7 +232,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // Command 2: run history to show session is maintained
         info!("   Sending command 2: history");
         match client.call_tool(
-            tools::SEND_TERMINAL_INPUT,
+            TERMINAL_SEND_INPUT,
             json!({
                 "pid": bash_pid,
                 "input": "history\n"
@@ -248,7 +248,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // Read history output - should show previous echo command
         info!("   Reading history output (should show 'echo First command'):");
         match client.call_tool(
-            tools::READ_TERMINAL_OUTPUT,
+            TERMINAL_READ_OUTPUT,
             json!({ "pid": bash_pid })
         ).await {
             Ok(result) => {
@@ -268,7 +268,7 @@ async fn run_terminal_example(client: &common::LoggingClient) -> anyhow::Result<
         // Stop bash session
         info!("   Stopping bash session:");
         match client.call_tool(
-            tools::STOP_TERMINAL_COMMAND,
+            TERMINAL_STOP_COMMAND,
             json!({ "pid": bash_pid })
         ).await {
             Ok(result) => info!("   Stopped bash: {:?}", result),
@@ -291,7 +291,7 @@ async fn cleanup_terminal_processes(client: &common::LoggingClient, pids: &[i64]
 
     for process_pid in pids {
         match client
-            .call_tool(tools::STOP_TERMINAL_COMMAND, json!({ "pid": process_pid }))
+            .call_tool(TERMINAL_STOP_COMMAND, json!({ "pid": process_pid }))
             .await
         {
             Ok(_) => info!("✅ Stopped process with PID: {}", process_pid),

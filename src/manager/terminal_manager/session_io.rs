@@ -36,10 +36,14 @@ impl super::TerminalManager {
             let screen = terminal.screen()?;
             let (_rows, cols) = screen.size();
 
-            // Count total lines in scrollback buffer (NOT viewport size)
-            // screen.size() returns viewport (24x80), not actual buffer size
-            // Must iterate to count, but this is cheap (no string allocation)
-            let total = screen.rows(0, cols).count();
+            // Get cursor position to determine actual content written
+            // cursor_position() returns (row, col) - row indicates last written line
+            let (cursor_row, _cursor_col) = screen.cursor_position();
+            
+            // Actual content ends at cursor position (0-indexed)
+            // Add 1 to convert from 0-indexed position to count
+            // This prevents iterating through 10,000 empty pre-allocated lines
+            let total = (cursor_row as usize) + 1;
 
             // Calculate pagination range
             let (start, end) = if offset < 0 {
@@ -138,7 +142,7 @@ impl super::TerminalManager {
         // 3. Update session state
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get_mut(&pid) {
-            session.is_blocked = false;
+            session.still_running = false;
             session.ready_for_input = false;
         }
 

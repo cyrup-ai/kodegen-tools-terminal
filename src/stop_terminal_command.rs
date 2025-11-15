@@ -31,7 +31,7 @@ impl Tool for StopTerminalCommandTool {
     type PromptArgs = StopTerminalCommandPromptArgs;
 
     fn name() -> &'static str {
-        "terminal_stop_command"
+        kodegen_mcp_schema::terminal::TERMINAL_STOP_COMMAND
     }
 
     fn description() -> &'static str {
@@ -104,7 +104,7 @@ impl Tool for StopTerminalCommandTool {
                      6. Returns error if PID doesn't exist\n\n\
                      Typical workflow:\n\
                      1. Start: start_terminal_command({\"command\": \"sleep 3600\"})\n\
-                        Returns: {\"pid\": 12345, \"is_blocked\": true}\n\
+                        Returns: {\"pid\": 12345, \"still_running\": true}\n\
                      2. Realize you don't need it anymore\n\
                      3. Stop: stop_terminal_command({\"pid\": 12345})\n\
                         Returns: {\"success\": true}\n\n\
@@ -119,7 +119,7 @@ impl Tool for StopTerminalCommandTool {
                      - Only affects sessions you started via start_terminal_command\n\
                      - Returns error if PID doesn't exist or already terminated\n\n\
                      Example with list_terminal_commands:\n\
-                     1. list_terminal_commands() → [{\"pid\": 12345, \"is_blocked\": true}]\n\
+                     1. list_terminal_commands() → [{\"pid\": 12345, \"still_running\": true}]\n\
                      2. stop_terminal_command({\"pid\": 12345}) → Stop that specific process\n\n\
                      Note: After termination, the process will move to completed sessions \
                      and you can still retrieve its partial output via read_terminal_output.",

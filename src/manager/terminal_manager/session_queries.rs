@@ -23,7 +23,7 @@ impl super::TerminalManager {
                     let runtime = u64::try_from(runtime_ms).unwrap_or(0);
                     ActiveTerminalSession {
                         pid: session.pid,
-                        is_blocked: session.is_blocked,
+                        still_running: session.still_running,
                         runtime,
                     }
                 })

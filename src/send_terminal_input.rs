@@ -31,7 +31,7 @@ impl Tool for SendTerminalInputTool {
     type PromptArgs = SendTerminalInputPromptArgs;
 
     fn name() -> &'static str {
-        "terminal_send_input"
+        kodegen_mcp_schema::terminal::TERMINAL_SEND_INPUT
     }
 
     fn description() -> &'static str {

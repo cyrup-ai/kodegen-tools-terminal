@@ -81,26 +81,35 @@ The server exposes 5 MCP tools for terminal management (see [MCP Tools](#mcp-too
 
 ### 1. `start_terminal_command`
 
-Start a new terminal session with a command.
+Execute shell commands with full terminal emulation. Supports long-running commands, output streaming, and session management.
+
+**Primary use cases:**
+- Build/compile commands (30s-5min): check, build, test, install
+- Development servers and file watchers
+- Interactive programs (REPLs, editors, monitoring tools)
 
 **Arguments:**
 ```json
 {
   "command": "python3 -i",
-  "initial_delay_ms": 100,
-  "shell": "/bin/bash"  // optional
+  "initial_delay_ms": 100,  // Window for fast commands to complete (default: 100ms)
+  "shell": "/bin/bash"      // optional
 }
 ```
 
-**Returns:**
+**Returns (always returns PID + output + status):**
 ```json
 {
   "pid": 1000,
-  "output": "Python 3.x.x\n>>> ",
-  "is_blocked": false,
+  "output": "Python 3.x.x\n>>> ",  // Captured during initial_delay_ms
+  "still_running": false,           // true if command still executing
   "ready_for_input": true
 }
 ```
+
+**Return behavior:**
+- Fast commands (<100ms): Returns complete output, `still_running: false`
+- Slow commands (30s+): Returns partial output, `still_running: true` → use `read_terminal_output(pid)` to poll
 
 ### 2. `read_terminal_output`
 
@@ -161,7 +170,7 @@ List all active terminal sessions.
   "sessions": [
     {
       "pid": 1000,
-      "is_blocked": false,
+      "still_running": false,
       "runtime": 5420  // milliseconds
     }
   ]

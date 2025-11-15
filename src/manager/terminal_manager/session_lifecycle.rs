@@ -51,7 +51,7 @@ impl super::TerminalManager {
             command: command.to_string(),
             terminal: Arc::new(RwLock::new(terminal)),
             last_read_time: Arc::new(RwLock::new(Instant::now())),
-            is_blocked: false,
+            still_running: false,
             ready_for_input: false,
             start_time: Utc::now(),
         };
@@ -106,7 +106,7 @@ impl super::TerminalManager {
         // Get initial output if available
         let output_response = self.get_output(pid, 0, 1000).await;
 
-        let (output, is_blocked, ready_for_input) = if let Some(resp) = output_response {
+        let (output, still_running, ready_for_input) = if let Some(resp) = output_response {
             let text = resp.lines.join("");
             let ready = detect_repl_ready(&text);
             (text, !ready, ready)
@@ -117,7 +117,7 @@ impl super::TerminalManager {
         Ok(TerminalCommandResult {
             pid,
             output,
-            is_blocked,
+            still_running,
             ready_for_input,
         })
     }

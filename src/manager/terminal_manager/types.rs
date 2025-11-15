@@ -49,7 +49,7 @@ pub struct TerminalSessionInfo {
     pub last_read_time: Arc<RwLock<Instant>>,
 
     // KEEP: Existing fields unchanged
-    pub is_blocked: bool,
+    pub still_running: bool,
     pub ready_for_input: bool,
     pub start_time: DateTime<Utc>,
 }
@@ -58,7 +58,7 @@ pub struct TerminalSessionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveTerminalSession {
     pub pid: u32,
-    pub is_blocked: bool,
+    pub still_running: bool,
     /// Runtime in milliseconds
     pub runtime: u64,
 }
@@ -107,6 +107,6 @@ pub struct CompletedTerminalSession {
 pub struct TerminalCommandResult {
     pub pid: u32,
     pub output: String,
-    pub is_blocked: bool,
+    pub still_running: bool,
     pub ready_for_input: bool,
 }

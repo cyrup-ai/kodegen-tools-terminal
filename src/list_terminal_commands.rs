@@ -31,7 +31,7 @@ impl Tool for ListTerminalCommandsTool {
     type PromptArgs = ListTerminalCommandsPromptArgs;
 
     fn name() -> &'static str {
-        "terminal_list_commands"
+        kodegen_mcp_schema::terminal::TERMINAL_LIST_COMMANDS
     }
 
     fn description() -> &'static str {
@@ -80,7 +80,7 @@ impl Tool for ListTerminalCommandsTool {
 
                 json!({
                     "pid": session.pid,
-                    "is_blocked": session.is_blocked,
+                    "still_running": session.still_running,
                     "runtime_ms": session.runtime,
                     "runtime_s": format!("{runtime_s:.2}"),
                 })
@@ -128,13 +128,13 @@ impl Tool for ListTerminalCommandsTool {
                        \"sessions\": [\n\
                          {\n\
                            \"pid\": 12345,\n\
-                           \"is_blocked\": true,\n\
+                           \"still_running\": true,\n\
                            \"runtime_ms\": 5430,\n\
                            \"runtime_s\": \"5.43\"\n\
                          },\n\
                          {\n\
                            \"pid\": 12346,\n\
-                           \"is_blocked\": false,\n\
+                           \"still_running\": false,\n\
                            \"runtime_ms\": 1200,\n\
                            \"runtime_s\": \"1.20\"\n\
                          }\n\
@@ -144,7 +144,7 @@ impl Tool for ListTerminalCommandsTool {
                      }\n\n\
                      Understanding the output:\n\
                      - pid: Process ID to use with read_terminal_output or stop_terminal_command\n\
-                     - is_blocked: true = long-running (timed out), false = about to complete\n\
+                     - still_running: true = command still executing, false = completed\n\
                      - runtime_ms: How long the process has been running (milliseconds)\n\
                      - runtime_s: Human-readable runtime (seconds)\n\n\
                      Common workflows:\n\
