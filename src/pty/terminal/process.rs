@@ -7,19 +7,21 @@ impl Terminal {
     /// Close the terminal and kill the child process
     ///
     /// This method:
-    /// - Kills the child process if it exists
+    /// - Checks if the child process has already exited (non-blocking)
+    /// - Kills the child process if it's still running
     /// - Signals the writer task to stop by dropping the sender
-    /// - Waits for both reader and writer tasks to complete (with 5s timeout)
+    /// - Waits for both reader and writer tasks to complete with adaptive timeouts
     ///
     /// For clean shutdown, call this method explicitly before dropping the Terminal.
     /// The Drop implementation provides best-effort cleanup but cannot await.
     ///
-    /// # Timeouts
+    /// # Adaptive Timeouts
     ///
-    /// Reader and writer tasks have 5-second timeout. If timeout occurs:
-    /// - Task handle is dropped (cancellation signal sent)
-    /// - Error logged but `close()` continues
-    /// - Prevents hang in `cleanup_sessions()`
+    /// Task wait timeouts are adaptive based on process state:
+    /// - **Process already dead**: 100ms timeout (tasks should exit quickly)
+    /// - **Process still running**: 5s timeout (allow graceful shutdown)
+    ///
+    /// This optimization prevents unnecessary waits when stopping already-exited processes.
     ///
     /// # Errors
     ///
@@ -32,21 +34,49 @@ impl Terminal {
         // This makes rx.recv() return None, cleanly exiting the writer loop
         drop(self.sender.take());
 
-        // Kill child process (sends SIGKILL)
-        if let Some(child) = &self.child_process {
+        // Check if process has already exited BEFORE attempting kill
+        let process_already_dead = if let Some(child) = &self.child_process {
             let mut child_guard = child.lock().await;
-            if let Err(e) = child_guard.kill() {
-                // Log but don't fail if already exited
-                log::debug!("Failed to kill child process (may have already exited): {e}");
+            
+            // Try non-blocking check first
+            match child_guard.try_wait() {
+                Ok(Some(exit_status)) => {
+                    log::debug!("Process already exited with status: {exit_status:?}");
+                    true  // Process is dead
+                }
+                Ok(None) => {
+                    // Process still running - send SIGKILL
+                    if let Err(e) = child_guard.kill() {
+                        log::debug!("Failed to kill child process: {e}");
+                    } else {
+                        log::debug!("Sent SIGKILL to running child process");
+                    }
+                    false  // Process was alive (just killed it)
+                }
+                Err(e) => {
+                    log::warn!("try_wait failed: {e}");
+                    // Attempt kill anyway as fallback
+                    let _ = child_guard.kill();
+                    false  // Assume alive to be safe (use longer timeout)
+                }
             }
-        }
+        } else {
+            true  // No child process = nothing to wait for
+        };
+
+        // Adaptive timeout based on process state
+        let task_timeout = if process_already_dead {
+            Duration::from_millis(100)  // Dead process = tasks should exit quickly
+        } else {
+            Duration::from_secs(5)  // Running process = allow graceful shutdown
+        };
 
         // Collect first error but don't return early - must complete ALL cleanup
         let mut first_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
 
-        // Wait for reader task with timeout
+        // Wait for reader task with adaptive timeout
         if let Some(handle) = self.reader_task.take() {
-            match timeout(Duration::from_secs(5), handle).await {
+            match timeout(task_timeout, handle).await {
                 Ok(Ok(())) => {
                     log::debug!("Reader task completed successfully");
                 }
@@ -58,9 +88,18 @@ impl Terminal {
                     }
                 }
                 Err(_) => {
-                    log::error!(
-                        "Reader task timeout after 5s - forcing drop. Task may still be running."
-                    );
+                    if process_already_dead {
+                        log::warn!(
+                            "Reader task timeout after {}ms (process already dead). \
+                             This suggests the reader is stuck on blocking I/O.",
+                            task_timeout.as_millis()
+                        );
+                    } else {
+                        log::error!(
+                            "Reader task timeout after {}s - forcing drop. Task may still be running.",
+                            task_timeout.as_secs()
+                        );
+                    }
                     // Handle dropped, task will be cancelled
                 }
             }
@@ -68,7 +107,7 @@ impl Terminal {
 
         // ALWAYS await writer task (even if reader failed)
         if let Some(handle) = self.writer_task.take() {
-            match timeout(Duration::from_secs(5), handle).await {
+            match timeout(task_timeout, handle).await {
                 Ok(Ok(())) => {
                     log::debug!("Writer task completed successfully");
                 }
@@ -80,9 +119,18 @@ impl Terminal {
                     }
                 }
                 Err(_) => {
-                    log::error!(
-                        "Writer task timeout after 5s - forcing drop. Task may still be running."
-                    );
+                    if process_already_dead {
+                        log::warn!(
+                            "Writer task timeout after {}ms (process already dead). \
+                             This suggests the writer is stuck on blocking I/O.",
+                            task_timeout.as_millis()
+                        );
+                    } else {
+                        log::error!(
+                            "Writer task timeout after {}s - forcing drop. Task may still be running.",
+                            task_timeout.as_secs()
+                        );
+                    }
                     // Handle dropped, task will be cancelled
                 }
             }
