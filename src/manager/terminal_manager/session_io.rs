@@ -39,21 +39,51 @@ impl super::TerminalManager {
             let grid = term.grid();
 
             // Get grid dimensions
-            let _screen_lines = grid.screen_lines();
             let history_size = grid.history_size();
             let columns = grid.columns();
 
-            // Determine total content using cursor position (like current vt100 approach)
-            let cursor_point = grid.cursor.point;
-            let total = if cursor_point.line.0 == 0 && cursor_point.column.0 == 0 {
-                0  // No content written yet
-            } else if cursor_point.line.0 >= 0 {
-                // Cursor in visible region: Line(0) = first visible, Line(n) = nth visible
-                history_size + (cursor_point.line.0 as usize) + 1
-            } else {
-                // Cursor in scrollback (rare): Line(-1) = last scrollback, Line(-n) = nth from bottom
-                history_size - ((-cursor_point.line.0) as usize) + 1
-            };
+            // Determine total content by scanning grid for last non-empty line
+            // NOTE: Cursor position is NOT reliable - it only shows where next char would be written,
+            // not how much content exists. We must scan the grid itself.
+            let screen_lines = grid.screen_lines();
+            
+            // Find the last line with content by scanning from bottom to top
+            let mut last_content_line: Option<usize> = None;
+            
+            // First check visible region (bottom to top)
+            for line_idx in (0..screen_lines).rev() {
+                let line = &grid[Line(line_idx as i32)];
+                // Check if line has any non-whitespace, non-null characters
+                let has_content = (0..columns).any(|col| {
+                    let ch = line[Column(col)].c;
+                    ch != '\0' && !ch.is_whitespace()
+                });
+                
+                if has_content {
+                    last_content_line = Some(history_size + line_idx);
+                    break;
+                }
+            }
+            
+            // If no content in visible region, check scrollback (bottom to top)
+            if last_content_line.is_none() && history_size > 0 {
+                for i in (0..history_size).rev() {
+                    let line_idx = Line(-((history_size - i) as i32));
+                    let line = &grid[line_idx];
+                    let has_content = (0..columns).any(|col| {
+                        let ch = line[Column(col)].c;
+                        ch != '\0' && !ch.is_whitespace()
+                    });
+                    
+                    if has_content {
+                        last_content_line = Some(i);
+                        break;
+                    }
+                }
+            }
+            
+            // Total lines = last content line + 1 (or 0 if no content)
+            let total = last_content_line.map(|idx| idx + 1).unwrap_or(0);
 
             // Calculate pagination range (SAME LOGIC as current vt100 implementation)
             let (start, end) = if offset < 0 {
