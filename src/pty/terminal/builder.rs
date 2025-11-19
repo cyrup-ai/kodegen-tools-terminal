@@ -1,11 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 use tokio::sync::mpsc::channel;
-use vt100::Parser;
+use parking_lot::RwLock;
+use vte::ansi::Processor;
+use alacritty_terminal::term::{Term as AlacrittyTerm, Config as AlacrittyConfig};
 
-use super::types::{BellStyle, ColorMode, TermSize, Terminal, TerminalConfig};
+use super::types::{BellStyle, ColorMode, TermSize, Terminal, TerminalConfig, HeadlessEventProxy};
 
 /// Builder for creating Terminal instances with a fluent API
 #[derive(Default)]
@@ -223,12 +225,24 @@ impl TerminalBuilder {
         let rows = self.rows.unwrap_or(30);
         let cols = self.cols.unwrap_or(100);
 
-        // Create parser and channels
-        let parser = Arc::new(RwLock::new(Parser::new(rows, cols, self.scrollback)));
-
+        // Create channels for PTY I/O
         let (sender, receiver) = channel(100);
 
         let term_size = TermSize { cols, rows };
+
+        // Create Alacritty Term with HeadlessEventProxy
+        // Note: The real initialization happens in init() which sets scrollback via AlacrittyConfig
+        // Here we create a temporary term that will be replaced during init()
+        let alacritty_config = AlacrittyConfig {
+            scrolling_history: self.scrollback,
+            ..Default::default()
+        };
+        let event_proxy = HeadlessEventProxy;
+        let term = AlacrittyTerm::new(alacritty_config, &term_size, event_proxy);
+
+        // Create VTE processor
+        let processor = Arc::new(RwLock::new(Processor::default()));
+        let term = Arc::new(RwLock::new(term));
 
         // Create configuration from builder settings
         let config = TerminalConfig {
@@ -249,13 +263,14 @@ impl TerminalBuilder {
         };
 
         Terminal {
-            parser,
+            term,
+            processor,
             sender: Some(sender),
             receiver: Some(receiver),
             size: term_size,
             pty_closed: Arc::new(AtomicBool::new(false)),
             config,
-            child_process: None,
+            pty: None,
             reader_task: None,
             writer_task: None,
         }

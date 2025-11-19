@@ -35,33 +35,14 @@ impl Terminal {
         drop(self.sender.take());
 
         // Check if process has already exited BEFORE attempting kill
-        let process_already_dead = if let Some(child) = &self.child_process {
-            let mut child_guard = child.lock().await;
-            
-            // Try non-blocking check first
-            match child_guard.try_wait() {
-                Ok(Some(exit_status)) => {
-                    log::debug!("Process already exited with status: {exit_status:?}");
-                    true  // Process is dead
-                }
-                Ok(None) => {
-                    // Process still running - send SIGKILL
-                    if let Err(e) = child_guard.kill() {
-                        log::debug!("Failed to kill child process: {e}");
-                    } else {
-                        log::debug!("Sent SIGKILL to running child process");
-                    }
-                    false  // Process was alive (just killed it)
-                }
-                Err(e) => {
-                    log::warn!("try_wait failed: {e}");
-                    // Attempt kill anyway as fallback
-                    let _ = child_guard.kill();
-                    false  // Assume alive to be safe (use longer timeout)
-                }
-            }
+        let process_already_dead = if self.is_pty_closed() {
+            log::debug!("PTY already closed (process exited)");
+            true
         } else {
-            true  // No child process = nothing to wait for
+            // Process still running - drop PTY to kill it
+            log::debug!("Dropping PTY to kill child process");
+            self.pty = None;
+            false  // Process was alive (just killed it)
         };
 
         // Adaptive timeout based on process state
@@ -145,75 +126,103 @@ impl Terminal {
         Ok(())
     }
 
-    /// Wait for child process to exit naturally and return its exit status
+    /// Wait for child process to exit and return exit status
     ///
-    /// This is a blocking operation that waits until the process exits.
-    /// Use this when you want to know the exit code of the process.
-    pub async fn wait(&mut self) -> io::Result<portable_pty::ExitStatus> {
-        if let Some(child) = &self.child_process {
-            let mut child_guard = child.lock().await;
-            child_guard.wait()
-        } else {
-            Err(io::Error::other("No child process to wait for"))
+    /// Note: Alacritty's PTY handles child process management internally.
+    /// This polls for child exit events.
+    pub async fn wait(&mut self) -> io::Result<i32> {
+        #[cfg(unix)]
+        {
+            use alacritty_terminal::tty::{ChildEvent, EventedPty};
+
+            if let Some(pty) = &self.pty {
+                let mut pty_guard = pty.lock().await;
+
+                // Poll for child exit event
+                loop {
+                    if let Some(event) = pty_guard.next_child_event() {
+                        match event {
+                            ChildEvent::Exited(code) => return Ok(code.unwrap_or(-1)),
+                        }
+                    }
+
+                    // Small delay to avoid busy-waiting
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                }
+            } else {
+                Err(io::Error::other("No PTY to wait for"))
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            // Windows PTY doesn't expose next_child_event() yet
+            // Fall back to checking pty_closed flag
+            while !self.is_pty_closed() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            }
+            Ok(0)  // Unknown exit code on Windows
         }
     }
 
-    /// Try to get the exit status without waiting (non-blocking)
-    ///
-    /// Returns:
-    /// - `Ok(Some(status))` if the process has exited
-    /// - `Ok(None)` if the process is still running
-    /// - `Err(_)` if there's no child process or an error occurred
-    pub async fn try_wait(&mut self) -> io::Result<Option<portable_pty::ExitStatus>> {
-        if let Some(child) = &self.child_process {
-            let mut child_guard = child.lock().await;
-            child_guard.try_wait()
-        } else {
-            Err(io::Error::other("No child process to check"))
+    /// Try to get exit status without waiting (non-blocking)
+    pub async fn try_wait(&mut self) -> io::Result<Option<i32>> {
+        #[cfg(unix)]
+        {
+            use alacritty_terminal::tty::{ChildEvent, EventedPty};
+
+            if let Some(pty) = &self.pty {
+                let mut pty_guard = pty.lock().await;
+
+                // Check for child exit event (non-blocking)
+                if let Some(event) = pty_guard.next_child_event() {
+                    match event {
+                        ChildEvent::Exited(code) => Ok(Some(code.unwrap_or(-1))),
+                    }
+                } else {
+                    Ok(None)  // Still running
+                }
+            } else {
+                Err(io::Error::other("No PTY to check"))
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            // Windows PTY doesn't expose next_child_event() yet
+            // Fall back to checking pty_closed flag
+            if self.is_pty_closed() {
+                Ok(Some(0))  // Unknown exit code on Windows
+            } else {
+                Ok(None)
+            }
         }
     }
 
-    /// Send a signal to the child process (Unix only)
+    /// Send signal to child process (Unix only)
     ///
-    /// This allows sending signals like SIGTERM, SIGINT, etc. to the child process.
-    /// On non-Unix platforms, this method will return an error.
+    /// Note: Alacritty's PTY doesn't expose direct process ID access.
+    /// To kill the process, drop the PTY (self.pty = None).
     #[cfg(unix)]
     pub async fn signal(&mut self, sig: i32) -> io::Result<()> {
-        if let Some(child) = &self.child_process {
-            let child_guard = child.lock().await;
-            // Get the process ID from the child
-            if let Some(pid) = child_guard.process_id() {
-                // Send signal using libc
-                unsafe {
-                    if libc::kill(pid as libc::pid_t, sig) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                }
-                Ok(())
-            } else {
-                Err(io::Error::other("Failed to get process ID"))
-            }
+        // Alacritty's PTY doesn't expose process ID directly.
+        // The standard way to kill is to drop the PTY.
+        if sig == 9 || sig == 15 {  // SIGKILL or SIGTERM
+            self.pty = None;  // Dropping PTY kills child
+            Ok(())
         } else {
-            Err(io::Error::other("No child process to signal"))
+            Err(io::Error::other("Only SIGKILL and SIGTERM supported via PTY drop"))
         }
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // If exit_on_close is true, kill the child process
-        // Note: We can't await in Drop, so we spawn a task for best-effort cleanup
+        // If exit_on_close is true, drop PTY to kill the child process
+        // Note: We can't await in Drop, so this is best-effort cleanup
         // Users should call close() explicitly for guaranteed cleanup
-        if self.config.exit_on_close
-            && let Some(child) = &self.child_process
-        {
-            let child_clone = child.clone();
-            // Try to spawn a task to kill the process
-            // This may fail if the runtime is shutting down, which is expected
-            std::mem::drop(tokio::spawn(async move {
-                let mut child_guard = child_clone.lock().await;
-                let _ = child_guard.kill();
-            }));
+        if self.config.exit_on_close {
+            self.pty = None;  // Dropping PTY kills child
         }
     }
 }

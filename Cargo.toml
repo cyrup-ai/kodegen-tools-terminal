@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.2.2"
+version = "0.2.4"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -28,11 +28,11 @@ macos = "public.app-category.developer-tools"
 
 
 [dependencies]
-kodegen_mcp_schema = { version = "0.2" }
-kodegen_mcp_tool = { version = "0.2" }
-kodegen_config_manager = { version = "0.2" }
-kodegen_utils = { version = "0.2" }
-kodegen_server_http = { version = "0.2" }
+kodegen_mcp_schema = { version = "0.2", path = "../kodegen-mcp-schema" }
+kodegen_mcp_tool = { version = "0.2", path = "../kodegen-mcp-tool" }
+kodegen_config_manager = { version = "0.2", path = "../kodegen-config-manager" }
+kodegen_utils = { version = "0.2", path = "../kodegen-utils" }
+kodegen_server_http = { version = "0.2", path = "../kodegen-server-http" }
 
 # MCP SDK - for Tool implementation
 rmcp = { version = "0.8", features = ["client", "schemars", "server"] }
@@ -60,18 +60,43 @@ anyhow = "1"
 # TLS support - for embedded server mode
 rustls = "0.23"
 
-# PTY and VT100 terminal emulation dependencies (from cyterm)
+# Core terminal emulation dependencies (Alacritty-based)
+alacritty_terminal = "0.25"
+vte = "0.15"                # MUST match alacritty_terminal's vte version exactly
+parking_lot = "0.12.3"      # More efficient RwLock than std::sync::RwLock
+unicode-width = "0.2.0"     # For proper wide character handling
+base64 = "0.22.0"           # For alacritty_terminal's image protocol support
+bitflags = "2.4.1"          # For alacritty_terminal's cell flags
+home = "0.5.5"              # For shell path resolution
+regex-automata = "0.4.3"    # For alacritty_terminal's search features (optional)
+
+# PTY I/O
 bytes = "1"
-portable-pty = "0.9"
-vt100 = "0.16"
 
 [dev-dependencies]
-kodegen_mcp_client = { version = "0.2" }
+kodegen_mcp_client = { version = "0.2", path = "../kodegen-mcp-client" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Platform-specific PTY support (Unix)
 [target.'cfg(unix)'.dependencies]
+rustix-openpty = "0.2.0"    # Modern PTY creation API
+rustix = { version = "1.0.0", default-features = false, features = ["std"] }
+signal-hook = "0.3.10"      # For SIGCHLD handling
 libc = "0.2"
+
+# Platform-specific PTY support (Windows)
+[target.'cfg(windows)'.dependencies]
+piper = "0.2.1"             # Async pipe wrapper
+miow = "0.6.0"              # Windows I/O completion ports
+windows-sys = { version = "0.59.0", features = [
+    "Win32_System_Console",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+]}
 
 [lib]
 name = "kodegen_tools_terminal"

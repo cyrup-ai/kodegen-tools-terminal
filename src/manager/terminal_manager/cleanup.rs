@@ -109,19 +109,12 @@ impl super::TerminalManager {
                         .await
                         .ok()
                         .flatten()
-                        .map(|status| i32::from(!status.success()))
                 };
 
-                // Get final output from VT100 screen buffer
+                // Get final output from Alacritty Grid
                 let output = {
                     let terminal = session.terminal.read().await;
-                    if let Some(screen) = terminal.screen() {
-                        let (_rows, cols) = screen.size();
-                        let lines: Vec<String> = screen.rows(0, cols).collect();
-                        lines.join("\n")
-                    } else {
-                        String::new()
-                    }
+                    terminal.screen().unwrap_or_default()
                 };
 
                 // Convert timestamps (session.start_time is DateTime<Utc>, need SystemTime)

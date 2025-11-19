@@ -1,12 +1,12 @@
 use std::io;
-use vt100::{Parser, Screen};
+use bytes::Bytes;
 
-use super::types::Terminal;
+use super::types::{Terminal, KeyCode};
 
 impl Terminal {
-    /// Execute a command in the terminal and return the resulting screen
+    /// Execute a command in the terminal and return the resulting screen contents
     ///
-    /// Returns a `JoinHandle` that resolves to the final screen state when the command completes.
+    /// Returns a `JoinHandle` that resolves to the final screen contents when the command completes.
     ///
     /// # Errors
     /// Returns error if:
@@ -22,15 +22,15 @@ impl Terminal {
     /// # async fn example() -> Result<(), Box<dyn Error>> {
     /// let mut term = Terminal::builder().build();
     /// let handle = term.exec("ls -la").await?;
-    /// let screen = handle.await?;
-    /// println!("{}", screen.contents());
+    /// let output = handle.await?;
+    /// println!("{}", output);
     /// # Ok(())
     /// # }
     /// ```
     pub async fn exec(
         &mut self,
         command: impl Into<String> + Send + 'static,
-    ) -> io::Result<tokio::task::JoinHandle<Screen>> {
+    ) -> io::Result<tokio::task::JoinHandle<String>> {
         let command_str = command.into();
 
         // GUARD: Prevent double initialization (check if tasks are already running)
@@ -68,12 +68,49 @@ impl Terminal {
                 }
             }
 
-            // If we still can't get the screen after retries, return a blank screen
-            // This should be extremely rare (only if the parser lock is poisoned)
-            log::error!("Failed to acquire parser screen after retries, returning empty screen");
-            Parser::new(terminal.size.rows, terminal.size.cols, 0)
-                .screen()
-                .clone()
+            // If we still can't get the screen after retries, return empty string
+            // This should be extremely rare (only if the lock fails)
+            log::error!("Failed to acquire screen after retries, returning empty string");
+            String::new()
         }))
+    }
+
+    /// Send input bytes to the terminal
+    pub async fn send_input(&self, bytes: Bytes) -> io::Result<()> {
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Terminal has been closed"))?;
+        sender
+            .send(bytes)
+            .await
+            .map_err(|e| io::Error::other(format!("Failed to send input: {e}")))
+    }
+
+    /// Send a character to the terminal
+    pub async fn send_char(&self, c: char) -> io::Result<()> {
+        self.send_input(Bytes::from(c.to_string().into_bytes()))
+            .await
+    }
+
+    /// Send a key code to the terminal (special keys like arrows, backspace, etc.)
+    pub async fn send_keycode(&self, code: KeyCode) -> io::Result<()> {
+        let bytes = match code {
+            KeyCode::Backspace => Bytes::from(vec![8]),
+            KeyCode::Enter => Bytes::from(vec![b'\n']),
+            KeyCode::Left => Bytes::from(vec![27, 91, 68]),
+            KeyCode::Right => Bytes::from(vec![27, 91, 67]),
+            KeyCode::Up => Bytes::from(vec![27, 91, 65]),
+            KeyCode::Down => Bytes::from(vec![27, 91, 66]),
+            KeyCode::Tab => Bytes::from(vec![9]),
+            KeyCode::Delete => Bytes::from(vec![27, 91, 51, 126]),
+            KeyCode::Home => Bytes::from(vec![27, 79, 72]),
+            KeyCode::End => Bytes::from(vec![27, 79, 70]),
+            KeyCode::PageUp => Bytes::from(vec![27, 91, 53, 126]),
+            KeyCode::PageDown => Bytes::from(vec![27, 91, 54, 126]),
+            KeyCode::Esc => Bytes::from(vec![27]),
+        };
+
+        self.send_input(bytes).await
     }
 }

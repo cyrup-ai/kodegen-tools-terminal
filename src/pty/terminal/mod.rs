@@ -1,6 +1,6 @@
 // Core types and structures
 mod types;
-pub use types::{BellStyle, ColorMode, KeyCode, TermSize, Terminal, TerminalConfig};
+pub use types::{BellStyle, ColorMode, KeyCode, TermSize, Terminal, TerminalConfig, HeadlessEventProxy};
 
 // Builder pattern
 mod builder;
@@ -12,10 +12,7 @@ mod factory;
 // PTY initialization
 mod initialization;
 
-// Input/output operations
-mod io;
-
-// Command execution
+// Command execution and input operations
 mod execution;
 
 // Process management

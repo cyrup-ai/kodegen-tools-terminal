@@ -1,43 +1,85 @@
 use std::{
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
     collections::HashMap,
-    sync::atomic::{AtomicBool, Ordering},
-    sync::{Arc, RwLock},
 };
 
 use bytes::Bytes;
 use tokio::{
-    sync::{
-        Mutex,
-        mpsc::{Receiver, Sender},
-    },
+    sync::{Mutex, mpsc::{Receiver, Sender}},
     task,
 };
-use vt100::{Parser, Screen};
+
+// Alacritty imports
+use parking_lot::RwLock;  // More efficient than std::sync::RwLock
+use alacritty_terminal::term::Term as AlacrittyTerm;
+use alacritty_terminal::event::{Event as TermEvent, EventListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Line, Column};
+use vte::ansi::Processor;
+
+// Use the public Pty type which is re-exported from platform-specific modules
+use alacritty_terminal::tty::Pty;
+
+/// No-op event listener for headless terminal usage
+///
+/// Alacritty's Term sends events for GUI updates (title changes, cursor blinks, etc.).
+/// Since we're using it headlessly, we ignore all events.
+#[derive(Clone, Copy, Debug)]
+pub struct HeadlessEventProxy;  // Already pub, just needs to be exported in mod.rs
+
+impl EventListener for HeadlessEventProxy {
+    fn send_event(&self, _event: TermEvent) {
+        // Intentionally empty: we don't need GUI event notifications
+        // in a headless terminal server context
+    }
+}
 
 /// Represents a virtual terminal component
+/// Terminal emulator using Alacritty's Term + VTE processor
 pub struct Terminal {
-    pub(super) parser: Arc<RwLock<Parser>>,
+    /// Alacritty's terminal emulator (handles grid, cursor, modes, etc.)
+    pub(crate) term: Arc<RwLock<AlacrittyTerm<HeadlessEventProxy>>>,
+
+    /// VTE processor (processes ANSI escape sequences)
+    pub(super) processor: Arc<RwLock<Processor>>,
+
+    /// Channel sender for writing input to PTY
     pub(super) sender: Option<Sender<Bytes>>,
+
+    /// Channel receiver for writing input to PTY (taken by writer task)
     pub(super) receiver: Option<Receiver<Bytes>>,
+
+    /// Terminal size
     pub(super) size: TermSize,
+
+    /// PTY closed flag (set when reader task detects EOF)
     pub(super) pty_closed: Arc<AtomicBool>,
+
+    /// Terminal configuration
     pub(super) config: TerminalConfig,
-    pub(super) child_process: Option<Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>,
+
+    /// Alacritty's PTY handle (platform-specific)
+    pub(super) pty: Option<Arc<Mutex<Pty>>>,
+
+    /// Reader task handle (processes PTY output)
     pub(super) reader_task: Option<task::JoinHandle<()>>,
+
+    /// Writer task handle (sends input to PTY)
     pub(super) writer_task: Option<task::JoinHandle<()>>,
 }
 
 impl Clone for Terminal {
     fn clone(&self) -> Self {
         Self {
-            parser: self.parser.clone(),
+            term: self.term.clone(),
+            processor: self.processor.clone(),
             sender: self.sender.clone(),
-            receiver: None,
-            size: self.size.clone(),
+            receiver: None,  // Receiver cannot be cloned
+            size: self.size,
             pty_closed: self.pty_closed.clone(),
             config: self.config.clone(),
-            child_process: self.child_process.clone(),
-            reader_task: None,
+            pty: self.pty.clone(),
+            reader_task: None,  // Task handles cannot be cloned
             writer_task: None,
         }
     }
@@ -50,25 +92,86 @@ impl Terminal {
         self.pty_closed.load(Ordering::SeqCst)
     }
 
-    /// Get the terminal screen
-    /// Returns None if the parser lock is poisoned.
+    /// Get rendered screen contents as a string
+    ///
+    /// Renders the current terminal grid to a plain text string.
+    /// This replaces vt100::Screen::contents().
     #[must_use]
-    pub fn screen(&self) -> Option<Screen> {
-        match self.parser.read() {
-            Ok(p) => Some(p.screen().clone()),
-            Err(e) => {
-                log::error!("Parser lock poisoned when trying to read screen: {e}");
-                None
+    pub fn screen(&self) -> Option<String> {
+        let term = self.term.read();
+        let grid = term.grid();
+
+        // Pre-allocate: rows * cols + newlines
+        let capacity = grid.screen_lines() * (grid.columns() + 1);
+        let mut output = String::with_capacity(capacity);
+
+        for line_idx in 0..grid.screen_lines() {
+            let line = &grid[Line(line_idx as i32)];
+
+            for col_idx in 0..grid.columns() {
+                let cell = &line[Column(col_idx)];
+                output.push(cell.c);
+            }
+
+            // Add newline except for last line
+            if line_idx < grid.screen_lines() - 1 {
+                output.push('\n');
             }
         }
+
+        Some(output)
+    }
+
+    /// Get cell at specific position (useful for debugging/testing)
+    #[must_use]
+    pub fn cell_at(&self, row: usize, col: usize) -> Option<char> {
+        let term = self.term.read();
+        let grid = term.grid();
+
+        if row >= grid.screen_lines() || col >= grid.columns() {
+            return None;
+        }
+
+        let cell = &grid[Line(row as i32)][Column(col)];
+        Some(cell.c)
+    }
+
+    /// Get cursor position (row, col)
+    #[must_use]
+    pub fn cursor_position(&self) -> (usize, usize) {
+        let term = self.term.read();
+        let cursor = term.grid().cursor.point;
+        (cursor.line.0 as usize, cursor.column.0)
+    }
+
+    /// Check if alternate screen is active
+    #[must_use]
+    pub fn is_alt_screen(&self) -> bool {
+        let term = self.term.read();
+        term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
     }
 }
 
 /// Size information for the terminal
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct TermSize {
     pub cols: u16,
     pub rows: u16,
+}
+
+impl Dimensions for TermSize {
+    fn columns(&self) -> usize {
+        self.cols as usize
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.rows as usize
+    }
+
+    fn total_lines(&self) -> usize {
+        // For now, match screen_lines (can add scrollback later via config)
+        self.rows as usize
+    }
 }
 
 /// Terminal color mode options

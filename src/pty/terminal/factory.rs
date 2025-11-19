@@ -1,13 +1,15 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 use tokio::sync::mpsc::channel;
-use vt100::Parser;
+use parking_lot::RwLock;
+use vte::ansi::Processor;
+use alacritty_terminal::term::{Term as AlacrittyTerm, Config as AlacrittyConfig};
 
 use super::{
     builder::TerminalBuilder,
-    types::{BellStyle, ColorMode, TermSize, Terminal, TerminalConfig},
+    types::{BellStyle, ColorMode, TermSize, Terminal, TerminalConfig, HeadlessEventProxy},
 };
 
 impl Terminal {
@@ -88,14 +90,27 @@ impl Terminal {
             bell_style: BellStyle::Visual,
         };
 
+        // Create Alacritty Term with HeadlessEventProxy
+        let alacritty_config = AlacrittyConfig {
+            scrolling_history: 0,
+            ..Default::default()
+        };
+        let event_proxy = HeadlessEventProxy;
+        let term = AlacrittyTerm::new(alacritty_config, &size, event_proxy);
+
+        // Create VTE processor
+        let processor = Arc::new(RwLock::new(Processor::default()));
+        let term = Arc::new(RwLock::new(term));
+
         Self {
-            parser: Arc::new(RwLock::new(Parser::new(size.rows, size.cols, 0))),
+            term,
+            processor,
             sender: Some(tx),
             receiver: Some(rx),
             size,
             pty_closed: Arc::new(AtomicBool::new(false)),
             config,
-            child_process: None,
+            pty: None,
             reader_task: None,
             writer_task: None,
         }
