@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -35,7 +35,7 @@ kodegen_utils = { version = "0.2", path = "../kodegen-utils" }
 kodegen_server_http = { version = "0.2", path = "../kodegen-server-http" }
 
 # MCP SDK - for Tool implementation
-rmcp = { version = "0.8", features = ["client", "schemars", "server"] }
+rmcp = { version = "0.9", features = ["client", "schemars", "server"] }
 
 # Async runtime - for process management, IO, sync primitives
 tokio = { version = "1", features = ["full"] }
@@ -63,12 +63,12 @@ rustls = "0.23"
 # Core terminal emulation dependencies (Alacritty-based)
 alacritty_terminal = "0.25"
 vte = "0.15"                # MUST match alacritty_terminal's vte version exactly
-parking_lot = "0.12.3"      # More efficient RwLock than std::sync::RwLock
-unicode-width = "0.2.0"     # For proper wide character handling
-base64 = "0.22.0"           # For alacritty_terminal's image protocol support
-bitflags = "2.4.1"          # For alacritty_terminal's cell flags
-home = "0.5.5"              # For shell path resolution
-regex-automata = "0.4.3"    # For alacritty_terminal's search features (optional)
+parking_lot = "0.12.5"      # More efficient RwLock than std::sync::RwLock
+unicode-width = "0.2.2"     # For proper wide character handling
+base64 = "0.22.1"           # For alacritty_terminal's image protocol support
+bitflags = "2.10.0"          # For alacritty_terminal's cell flags
+home = "0.5.12"              # For shell path resolution
+regex-automata = "0.4.13"    # For alacritty_terminal's search features (optional)
 
 # PTY I/O
 bytes = "1"
@@ -81,15 +81,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Platform-specific PTY support (Unix)
 [target.'cfg(unix)'.dependencies]
 rustix-openpty = "0.2.0"    # Modern PTY creation API
-rustix = { version = "1.0.0", default-features = false, features = ["std"] }
-signal-hook = "0.3.10"      # For SIGCHLD handling
+rustix = { version = "1.1.2", default-features = false, features = ["std"] }
+signal-hook = "0.3.18"      # For SIGCHLD handling
 libc = "0.2"
 
 # Platform-specific PTY support (Windows)
 [target.'cfg(windows)'.dependencies]
-piper = "0.2.1"             # Async pipe wrapper
-miow = "0.6.0"              # Windows I/O completion ports
-windows-sys = { version = "0.59.0", features = [
+piper = "0.2.4"             # Async pipe wrapper
+miow = "0.6.1"              # Windows I/O completion ports
+windows-sys = { version = "0.61.2", features = [
     "Win32_System_Console",
     "Win32_Foundation",
     "Win32_Security",

@@ -42,6 +42,9 @@ impl super::TerminalManager {
             let history_size = grid.history_size();
             let columns = grid.columns();
 
+            log::debug!("get_output: grid dimensions - history_size={}, columns={}, screen_lines={}", 
+                       history_size, columns, grid.screen_lines());
+
             // Determine total content by scanning grid for last non-empty line
             // NOTE: Cursor position is NOT reliable - it only shows where next char would be written,
             // not how much content exists. We must scan the grid itself.
@@ -49,6 +52,7 @@ impl super::TerminalManager {
             
             // Find the last line with content by scanning from bottom to top
             let mut last_content_line: Option<usize> = None;
+            log::debug!("get_output: scanning grid for content...");
             
             // First check visible region (bottom to top)
             for line_idx in (0..screen_lines).rev() {
@@ -61,12 +65,17 @@ impl super::TerminalManager {
                 
                 if has_content {
                     last_content_line = Some(history_size + line_idx);
+                    log::debug!("get_output: found content in visible region at line_idx={}, abs_idx={}", 
+                               line_idx, history_size + line_idx);
                     break;
                 }
             }
             
+            log::debug!("get_output: visible region scan complete, last_content_line={:?}", last_content_line);
+            
             // If no content in visible region, check scrollback (bottom to top)
             if last_content_line.is_none() && history_size > 0 {
+                log::debug!("get_output: scanning scrollback region...");
                 for i in (0..history_size).rev() {
                     let line_idx = Line(-((history_size - i) as i32));
                     let line = &grid[line_idx];

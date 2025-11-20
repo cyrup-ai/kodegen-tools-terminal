@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell, EventedReadWrite};
 use alacritty_terminal::term::{Term as AlacrittyTerm, Config as AlacrittyConfig};
 use alacritty_terminal::event::WindowSize;
+use alacritty_terminal::grid::Dimensions;
 use vte::ansi::Processor;
 use tokio::{sync::Mutex, task};
 use parking_lot::RwLock;
@@ -115,8 +116,10 @@ impl Terminal {
         };
 
         // 5. Create platform-specific PTY using alacritty_terminal::tty::new()
+        log::debug!("Creating PTY with command: {:?}", self.config.command);
         let pty = alacritty_terminal::tty::new(&pty_options, window_size, 0)
             .map_err(|e| io::Error::other(format!("Failed to create PTY: {e}")))?;
+        log::info!("PTY created successfully");
 
         let pty_arc = Arc::new(Mutex::new(pty));
         self.pty = Some(pty_arc.clone());
@@ -128,24 +131,39 @@ impl Terminal {
         let pty_closed_flag = self.pty_closed.clone();
 
         let reader_handle = task::spawn_blocking(move || {
+            log::info!("PTY reader task starting");
+            
             // Get async runtime handle for blocking on async lock
             let rt = tokio::runtime::Handle::current();
 
             let mut pty = rt.block_on(pty_reader.lock());
+            log::debug!("PTY reader: obtained PTY lock");
 
             let mut buf = [0u8; 65536];  // 64KB buffer for better throughput
 
             loop {
+                log::trace!("PTY reader: calling read()...");
+                
+                // Unlock PTY during sleep to allow writer access
+                drop(pty);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                pty = rt.block_on(pty_reader.lock());
+                
                 // Read from PTY using EventedReadWrite trait
                 let size = match pty.reader().read(&mut buf) {
                     Ok(size) => size,
                     Err(e) => {
                         if e.kind() == io::ErrorKind::BrokenPipe {
                             log::info!("PTY reader: broken pipe (child exited)");
+                            break;
+                        } else if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted {
+                            // Non-blocking PTY with no data yet, or interrupted syscall - retry
+                            log::trace!("PTY read would block, retrying...");
+                            continue;
                         } else {
                             log::error!("PTY read error: {e}");
+                            break;
                         }
-                        break;
                     }
                 };
 
@@ -154,13 +172,19 @@ impl Terminal {
                     break;  // EOF
                 }
 
+                log::debug!("PTY reader: read {} bytes from PTY", size);
+                log::trace!("PTY bytes: {:?}", &buf[..size.min(100)]);
+
                 // Feed bytes through VTE processor → Term
                 // CRITICAL: Use byte SLICE, not byte-by-byte iteration
                 // This matches Alacritty's event_loop.rs:154 pattern
                 let mut processor = processor_clone.write();
                 let mut term = term_clone.write();
 
+                log::debug!("PTY reader: calling processor.advance() with {} bytes", size);
                 processor.advance(&mut *term, &buf[..size]);
+                log::debug!("PTY reader: advance() completed, grid now has {} screen lines", 
+                           term.grid().screen_lines());
             }
 
             pty_closed_flag.store(true, Ordering::SeqCst);
@@ -178,9 +202,10 @@ impl Terminal {
         })?;
 
         let writer_handle = tokio::spawn(async move {
-            let mut pty = pty_writer.lock().await;
-
             while let Some(bytes) = rx.recv().await {
+                // Lock only for the write operation, then release
+                let mut pty = pty_writer.lock().await;
+                
                 if let Err(e) = pty.writer().write_all(&bytes) {
                     log::error!("PTY write error: {e}");
                     break;
@@ -189,6 +214,8 @@ impl Terminal {
                     log::error!("PTY flush error: {e}");
                     break;
                 }
+                
+                // Lock is automatically released here when pty goes out of scope
             }
 
             log::info!("PTY writer task finished");
