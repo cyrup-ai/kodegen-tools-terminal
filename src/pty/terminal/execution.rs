@@ -60,7 +60,7 @@ impl Terminal {
 
             // Try to get the screen, retrying a few times if the lock is busy
             for attempt in 0..10 {
-                if let Some(screen) = terminal.screen() {
+                if let Some(screen) = terminal.screen().await {
                     return screen;
                 }
                 if attempt < 9 {

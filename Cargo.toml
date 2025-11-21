@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.2.6"
+version = "0.3.1"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -28,11 +28,11 @@ macos = "public.app-category.developer-tools"
 
 
 [dependencies]
-kodegen_mcp_schema = { version = "0.2", path = "../kodegen-mcp-schema" }
-kodegen_mcp_tool = { version = "0.2", path = "../kodegen-mcp-tool" }
-kodegen_config_manager = { version = "0.2", path = "../kodegen-config-manager" }
-kodegen_utils = { version = "0.2", path = "../kodegen-utils" }
-kodegen_server_http = { version = "0.2", path = "../kodegen-server-http" }
+kodegen_mcp_schema = { version = "0.3" }
+kodegen_mcp_tool = { version = "0.3" }
+kodegen_config_manager = { version = "0.3" }
+kodegen_utils = { version = "0.3" }
+kodegen_server_http = { version = "0.3" }
 
 # MCP SDK - for Tool implementation
 rmcp = { version = "0.9", features = ["client", "schemars", "server"] }
@@ -63,7 +63,6 @@ rustls = "0.23"
 # Core terminal emulation dependencies (Alacritty-based)
 alacritty_terminal = "0.25"
 vte = "0.15"                # MUST match alacritty_terminal's vte version exactly
-parking_lot = "0.12.5"      # More efficient RwLock than std::sync::RwLock
 unicode-width = "0.2.2"     # For proper wide character handling
 base64 = "0.22.1"           # For alacritty_terminal's image protocol support
 bitflags = "2.10.0"          # For alacritty_terminal's cell flags
@@ -72,9 +71,10 @@ regex-automata = "0.4.13"    # For alacritty_terminal's search features (optiona
 
 # PTY I/O
 bytes = "1"
+parking_lot = "0.12.5"
 
 [dev-dependencies]
-kodegen_mcp_client = { version = "0.2", path = "../kodegen-mcp-client" }
+kodegen_mcp_client = { version = "0.3" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

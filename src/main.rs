@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    run_http_server("terminal", |config, _tracker| {
-        let config = config.clone();
+    run_http_server("terminal", |_config, _tracker| {
         Box::pin(async move {
             let tool_router = ToolRouter::new();
             let prompt_router = PromptRouter::new();
@@ -18,41 +17,18 @@ async fn main() -> Result<()> {
 
             // Create managers for terminal tools
             let terminal_manager = Arc::new(kodegen_tools_terminal::TerminalManager::new());
-            let command_manager =
-                kodegen_tools_terminal::CommandManager::new(config.get_blocked_commands());
 
-            // Register all 5 terminal tools
+            // Register 2 terminal tools (was 5)
             let (tool_router, prompt_router) = register_tool(
                 tool_router,
                 prompt_router,
-                kodegen_tools_terminal::StartTerminalCommandTool::new(
-                    terminal_manager.clone(),
-                    command_manager,
-                ),
-            );
-
-            let (tool_router, prompt_router) = register_tool(
-                tool_router,
-                prompt_router,
-                kodegen_tools_terminal::ReadTerminalOutputTool::new(terminal_manager.clone()),
+                kodegen_tools_terminal::TerminalRunCommandTool::new(terminal_manager.clone()),
             );
 
             let (tool_router, prompt_router) = register_tool(
                 tool_router,
                 prompt_router,
                 kodegen_tools_terminal::SendTerminalInputTool::new(terminal_manager.clone()),
-            );
-
-            let (tool_router, prompt_router) = register_tool(
-                tool_router,
-                prompt_router,
-                kodegen_tools_terminal::StopTerminalCommandTool::new(terminal_manager.clone()),
-            );
-
-            let (tool_router, prompt_router) = register_tool(
-                tool_router,
-                prompt_router,
-                kodegen_tools_terminal::ListTerminalCommandsTool::new(terminal_manager.clone()),
             );
 
             // CRITICAL: Start cleanup task after all tools are registered

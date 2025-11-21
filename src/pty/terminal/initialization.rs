@@ -3,13 +3,14 @@ use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use parking_lot::Mutex as SyncMutex;
 use alacritty_terminal::tty::{Options as PtyOptions, Shell, EventedReadWrite};
 use alacritty_terminal::term::{Term as AlacrittyTerm, Config as AlacrittyConfig};
 use alacritty_terminal::event::WindowSize;
 use alacritty_terminal::grid::Dimensions;
 use vte::ansi::Processor;
-use tokio::{sync::Mutex, task};
-use parking_lot::RwLock;
+use tokio::task;
+use tokio::sync::{RwLock, mpsc};
 
 use super::{shell::get_default_shell, types::{Terminal, HeadlessEventProxy}};
 
@@ -121,33 +122,29 @@ impl Terminal {
             .map_err(|e| io::Error::other(format!("Failed to create PTY: {e}")))?;
         log::info!("PTY created successfully");
 
-        let pty_arc = Arc::new(Mutex::new(pty));
+        let pty_arc = Arc::new(SyncMutex::new(pty));
         self.pty = Some(pty_arc.clone());
 
-        // 6. Spawn reader task to process PTY output
-        let term_clone = self.term.clone();
-        let processor_clone = self.processor.clone();
+        // 5.5. Create channel for PTY bytes (reader → processor)
+        let (pty_bytes_tx, pty_bytes_rx) = mpsc::unbounded_channel();
+        self.pty_bytes_tx = Some(pty_bytes_tx.clone());
+        self.pty_bytes_rx = Some(pty_bytes_rx);
+
+        // 6. Spawn reader task (blocking I/O only - sends raw bytes to processor)
         let pty_reader = pty_arc.clone();
         let pty_closed_flag = self.pty_closed.clone();
 
         let reader_handle = task::spawn_blocking(move || {
             log::info!("PTY reader task starting");
             
-            // Get async runtime handle for blocking on async lock
-            let rt = tokio::runtime::Handle::current();
-
-            let mut pty = rt.block_on(pty_reader.lock());
-            log::debug!("PTY reader: obtained PTY lock");
+            // Direct lock acquisition using parking_lot
+            let mut pty = pty_reader.lock();
+            log::debug!("PTY reader: obtained PTY lock (holding for duration)");
 
             let mut buf = [0u8; 65536];  // 64KB buffer for better throughput
 
             loop {
                 log::trace!("PTY reader: calling read()...");
-                
-                // Unlock PTY during sleep to allow writer access
-                drop(pty);
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                pty = rt.block_on(pty_reader.lock());
                 
                 // Read from PTY using EventedReadWrite trait
                 let size = match pty.reader().read(&mut buf) {
@@ -157,7 +154,6 @@ impl Terminal {
                             log::info!("PTY reader: broken pipe (child exited)");
                             break;
                         } else if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted {
-                            // Non-blocking PTY with no data yet, or interrupted syscall - retry
                             log::trace!("PTY read would block, retrying...");
                             continue;
                         } else {
@@ -169,53 +165,97 @@ impl Terminal {
 
                 if size == 0 {
                     log::info!("PTY reader: EOF (0 bytes read)");
-                    break;  // EOF
+                    break;
                 }
 
                 log::debug!("PTY reader: read {} bytes from PTY", size);
                 log::trace!("PTY bytes: {:?}", &buf[..size.min(100)]);
 
-                // Feed bytes through VTE processor → Term
-                // CRITICAL: Use byte SLICE, not byte-by-byte iteration
-                // This matches Alacritty's event_loop.rs:154 pattern
-                let mut processor = processor_clone.write();
-                let mut term = term_clone.write();
-
-                log::debug!("PTY reader: calling processor.advance() with {} bytes", size);
-                processor.advance(&mut *term, &buf[..size]);
-                log::debug!("PTY reader: advance() completed, grid now has {} screen lines", 
-                           term.grid().screen_lines());
+                // Send bytes to processor task via channel (NO processing here)
+                if pty_bytes_tx.send(buf[..size].to_vec()).is_err() {
+                    log::error!("PTY reader: processor task dropped channel");
+                    break;
+                }
             }
 
             pty_closed_flag.store(true, Ordering::SeqCst);
-            log::info!("PTY output processing task finished");
+            log::info!("PTY reader task finished");
         });
 
         self.reader_task = Some(reader_handle);
 
+        // 6.5. Spawn processor task (async - receives bytes and processes VTE)
+        let processor_clone = self.processor.clone();
+        let term_clone = self.term.clone();
+        let mut pty_bytes_rx = self.pty_bytes_rx.take().ok_or_else(|| {
+            // CLEANUP: Drop reader task before error
+            self.reader_task = None;
+            io::Error::other("pty_bytes_rx already taken")
+        })?;
+
+        let processor_handle = tokio::spawn(async move {
+            log::info!("VTE processor task starting");
+
+            while let Some(bytes) = pty_bytes_rx.recv().await {
+                log::debug!("Processor: received {} bytes", bytes.len());
+
+                // Acquire async locks with .await
+                let mut processor = processor_clone.write().await;
+                let mut term = term_clone.write().await;
+
+                log::debug!("Processor: calling advance() with {} bytes", bytes.len());
+                processor.advance(&mut *term, &bytes);
+                log::debug!("Processor: advance() completed, grid now has {} screen lines",
+                           term.grid().screen_lines());
+
+                // Locks automatically dropped
+            }
+
+            log::info!("VTE processor task finished");
+        });
+
+        self.processor_task = Some(processor_handle);
+
         // 7. Spawn writer task (sends input to PTY)
         let pty_writer = pty_arc.clone();
         let mut rx = self.receiver.take().ok_or_else(|| {
-            // CLEANUP: Drop reader task handle before returning error
+            // CLEANUP: Drop reader and processor task handles before returning error
             self.reader_task = None;
+            self.processor_task = None;
             io::Error::other("Receiver already taken")
         })?;
 
         let writer_handle = tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
-                // Lock only for the write operation, then release
-                let mut pty = pty_writer.lock().await;
+                // Clone Arc for move into spawn_blocking
+                let pty_clone = pty_writer.clone();
                 
-                if let Err(e) = pty.writer().write_all(&bytes) {
-                    log::error!("PTY write error: {e}");
-                    break;
-                }
-                if let Err(e) = pty.writer().flush() {
-                    log::error!("PTY flush error: {e}");
-                    break;
-                }
+                // Wrap blocking I/O in spawn_blocking
+                let write_result = tokio::task::spawn_blocking(move || -> io::Result<()> {
+                    // Direct lock acquisition using parking_lot
+                    let mut pty = pty_clone.lock();
+                    
+                    // Blocking writes (safely in spawn_blocking)
+                    pty.writer().write_all(&bytes)?;
+                    pty.writer().flush()?;
+                    
+                    Ok(())
+                }).await;
                 
-                // Lock is automatically released here when pty goes out of scope
+                // Handle spawn_blocking errors
+                match write_result {
+                    Ok(Ok(())) => {
+                        // Write succeeded
+                    }
+                    Ok(Err(e)) => {
+                        log::error!("PTY write error: {e}");
+                        break;
+                    }
+                    Err(e) => {
+                        log::error!("PTY write task panicked: {e}");
+                        break;
+                    }
+                }
             }
 
             log::info!("PTY writer task finished");

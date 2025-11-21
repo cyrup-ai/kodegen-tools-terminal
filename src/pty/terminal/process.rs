@@ -130,13 +130,14 @@ impl Terminal {
     ///
     /// Note: Alacritty's PTY handles child process management internally.
     /// This polls for child exit events.
+    #[allow(clippy::await_holding_lock)]  // parking_lot::Mutex is sync, not async - intentional design
     pub async fn wait(&mut self) -> io::Result<i32> {
         #[cfg(unix)]
         {
             use alacritty_terminal::tty::{ChildEvent, EventedPty};
 
             if let Some(pty) = &self.pty {
-                let mut pty_guard = pty.lock().await;
+                let mut pty_guard = pty.lock();
 
                 // Poll for child exit event
                 loop {
@@ -172,7 +173,7 @@ impl Terminal {
             use alacritty_terminal::tty::{ChildEvent, EventedPty};
 
             if let Some(pty) = &self.pty {
-                let mut pty_guard = pty.lock().await;
+                let mut pty_guard = pty.lock();
 
                 // Check for child exit event (non-blocking)
                 if let Some(event) = pty_guard.next_child_event() {

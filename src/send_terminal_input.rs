@@ -1,6 +1,6 @@
 use crate::manager::TerminalManager;
 use kodegen_mcp_schema::terminal::{SendTerminalInputArgs, SendTerminalInputPromptArgs};
-use kodegen_mcp_tool::Tool;
+use kodegen_mcp_tool::{Tool, ToolExecutionContext};
 use kodegen_mcp_tool::error::McpError;
 use rmcp::model::{Content, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole};
 use serde_json::json;
@@ -48,7 +48,7 @@ impl Tool for SendTerminalInputTool {
         false // Each input execution has cumulative effect in REPL state
     }
 
-    async fn execute(&self, args: Self::Args) -> Result<Vec<Content>, McpError> {
+    async fn execute(&self, args: Self::Args, _ctx: ToolExecutionContext) -> Result<Vec<Content>, McpError> {
         let success = self
             .terminal_manager
             .send_input(args.pid, &args.input, args.append_newline)

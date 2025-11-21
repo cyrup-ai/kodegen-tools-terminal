@@ -35,7 +35,7 @@ impl super::TerminalManager {
         // 2. Get Grid, calculate pagination, and extract lines using direct indexing
         let (lines, total_lines, start, end, is_complete) = {
             let terminal = session.terminal.read().await;
-            let term = terminal.term.read();  // parking_lot::RwLock
+            let term = terminal.term.read().await;
             let grid = term.grid();
 
             // Get grid dimensions

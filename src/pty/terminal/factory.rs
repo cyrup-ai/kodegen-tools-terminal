@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use tokio::sync::mpsc::channel;
-use parking_lot::RwLock;
+use tokio::sync::RwLock;
 use vte::ansi::Processor;
 use alacritty_terminal::term::{Term as AlacrittyTerm, Config as AlacrittyConfig};
 
@@ -111,7 +111,10 @@ impl Terminal {
             pty_closed: Arc::new(AtomicBool::new(false)),
             config,
             pty: None,
+            pty_bytes_tx: None,
+            pty_bytes_rx: None,
             reader_task: None,
+            processor_task: None,
             writer_task: None,
         }
     }

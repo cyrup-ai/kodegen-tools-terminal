@@ -4,13 +4,14 @@ use std::{
 };
 
 use bytes::Bytes;
+use parking_lot::Mutex as SyncMutex;
 use tokio::{
-    sync::{Mutex, mpsc::{Receiver, Sender}},
+    sync::{mpsc::{Receiver, Sender, UnboundedSender, UnboundedReceiver}},
     task,
 };
 
 // Alacritty imports
-use parking_lot::RwLock;  // More efficient than std::sync::RwLock
+use tokio::sync::RwLock;  // Async-compatible RwLock (keep for term/processor)
 use alacritty_terminal::term::Term as AlacrittyTerm;
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -59,10 +60,19 @@ pub struct Terminal {
     pub(super) config: TerminalConfig,
 
     /// Alacritty's PTY handle (platform-specific)
-    pub(super) pty: Option<Arc<Mutex<Pty>>>,
+    pub(super) pty: Option<Arc<SyncMutex<Pty>>>,
 
-    /// Reader task handle (processes PTY output)
+    /// Channel sender for raw PTY bytes (reader → processor)
+    pub(super) pty_bytes_tx: Option<UnboundedSender<Vec<u8>>>,
+
+    /// Channel receiver for raw PTY bytes (reader → processor)
+    pub(super) pty_bytes_rx: Option<UnboundedReceiver<Vec<u8>>>,
+
+    /// Reader task handle (reads PTY bytes)
     pub(super) reader_task: Option<task::JoinHandle<()>>,
+
+    /// Processor task handle (processes VTE sequences)
+    pub(super) processor_task: Option<task::JoinHandle<()>>,
 
     /// Writer task handle (sends input to PTY)
     pub(super) writer_task: Option<task::JoinHandle<()>>,
@@ -79,7 +89,10 @@ impl Clone for Terminal {
             pty_closed: self.pty_closed.clone(),
             config: self.config.clone(),
             pty: self.pty.clone(),
+            pty_bytes_tx: self.pty_bytes_tx.clone(),
+            pty_bytes_rx: None,  // Receiver cannot be cloned
             reader_task: None,  // Task handles cannot be cloned
+            processor_task: None,
             writer_task: None,
         }
     }
@@ -97,8 +110,8 @@ impl Terminal {
     /// Renders the current terminal grid to a plain text string.
     /// This replaces vt100::Screen::contents().
     #[must_use]
-    pub fn screen(&self) -> Option<String> {
-        let term = self.term.read();
+    pub async fn screen(&self) -> Option<String> {
+        let term = self.term.read().await;
         let grid = term.grid();
 
         // Pre-allocate: rows * cols + newlines
@@ -124,8 +137,8 @@ impl Terminal {
 
     /// Get cell at specific position (useful for debugging/testing)
     #[must_use]
-    pub fn cell_at(&self, row: usize, col: usize) -> Option<char> {
-        let term = self.term.read();
+    pub async fn cell_at(&self, row: usize, col: usize) -> Option<char> {
+        let term = self.term.read().await;
         let grid = term.grid();
 
         if row >= grid.screen_lines() || col >= grid.columns() {
@@ -138,16 +151,16 @@ impl Terminal {
 
     /// Get cursor position (row, col)
     #[must_use]
-    pub fn cursor_position(&self) -> (usize, usize) {
-        let term = self.term.read();
+    pub async fn cursor_position(&self) -> (usize, usize) {
+        let term = self.term.read().await;
         let cursor = term.grid().cursor.point;
         (cursor.line.0 as usize, cursor.column.0)
     }
 
     /// Check if alternate screen is active
     #[must_use]
-    pub fn is_alt_screen(&self) -> bool {
-        let term = self.term.read();
+    pub async fn is_alt_screen(&self) -> bool {
+        let term = self.term.read().await;
         term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
     }
 }

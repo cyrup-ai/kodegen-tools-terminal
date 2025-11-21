@@ -40,11 +40,10 @@ impl super::TerminalManager {
 
         for (pid, session) in sessions.iter() {
             // Check completion status from terminal
-            let is_complete = session
-                .terminal
-                .try_read()
-                .map(|t| t.is_pty_closed())
-                .unwrap_or(false);
+            let is_complete = {
+                let terminal = session.terminal.read().await;
+                terminal.is_pty_closed()
+            };
 
             let last_read = session.last_read_time.try_read().map(|t| *t).unwrap_or(now);
 
@@ -114,7 +113,7 @@ impl super::TerminalManager {
                 // Get final output from Alacritty Grid
                 let output = {
                     let terminal = session.terminal.read().await;
-                    terminal.screen().unwrap_or_default()
+                    terminal.screen().await.unwrap_or_default()
                 };
 
                 // Convert timestamps (session.start_time is DateTime<Utc>, need SystemTime)

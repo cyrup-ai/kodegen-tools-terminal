@@ -1,21 +1,15 @@
 pub mod manager;
 pub mod pty;
 
-pub mod list_terminal_commands;
-pub mod read_terminal_output;
+pub mod run_command;
 pub mod send_terminal_input;
-pub mod start_terminal_command;
-pub mod stop_terminal_command;
 
-pub use list_terminal_commands::ListTerminalCommandsTool;
+pub use run_command::TerminalRunCommandTool;
+pub use send_terminal_input::SendTerminalInputTool;
 pub use manager::{
     ActiveTerminalSession, CommandManager, CompletedTerminalSession, TerminalCommandResult,
     TerminalManager, TerminalOutputResponse,
 };
-pub use read_terminal_output::ReadTerminalOutputTool;
-pub use send_terminal_input::SendTerminalInputTool;
-pub use start_terminal_command::StartTerminalCommandTool;
-pub use stop_terminal_command::StopTerminalCommandTool;
 
 /// Start the HTTP server programmatically for embedded mode
 ///
@@ -54,7 +48,7 @@ pub async fn start_server(
         shutdown_timeout,
         session_keep_alive,
         |config: &kodegen_config_manager::ConfigManager, _tracker| {
-            let config = config.clone();
+            let _config = config.clone();
             Box::pin(async move {
                 let tool_router = ToolRouter::new();
                 let prompt_router = PromptRouter::new();
@@ -62,37 +56,18 @@ pub async fn start_server(
 
                 // Create managers for terminal tools
                 let terminal_manager = Arc::new(crate::TerminalManager::new());
-                let command_manager = crate::CommandManager::new(config.get_blocked_commands());
 
-                // Register all 5 terminal tools
+                // Register 2 terminal tools (was 5)
                 let (tool_router, prompt_router) = register_tool(
                     tool_router,
                     prompt_router,
-                    crate::StartTerminalCommandTool::new(terminal_manager.clone(), command_manager),
-                );
-
-                let (tool_router, prompt_router) = register_tool(
-                    tool_router,
-                    prompt_router,
-                    crate::ReadTerminalOutputTool::new(terminal_manager.clone()),
+                    crate::TerminalRunCommandTool::new(terminal_manager.clone()),
                 );
 
                 let (tool_router, prompt_router) = register_tool(
                     tool_router,
                     prompt_router,
                     crate::SendTerminalInputTool::new(terminal_manager.clone()),
-                );
-
-                let (tool_router, prompt_router) = register_tool(
-                    tool_router,
-                    prompt_router,
-                    crate::StopTerminalCommandTool::new(terminal_manager.clone()),
-                );
-
-                let (tool_router, prompt_router) = register_tool(
-                    tool_router,
-                    prompt_router,
-                    crate::ListTerminalCommandsTool::new(terminal_manager.clone()),
                 );
 
                 // Start cleanup task
