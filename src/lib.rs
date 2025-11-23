@@ -1,11 +1,9 @@
 pub mod manager;
 pub mod pty;
 
-pub mod run_command;
-pub mod send_terminal_input;
+pub mod terminal;
 
-pub use run_command::TerminalRunCommandTool;
-pub use send_terminal_input::SendTerminalInputTool;
+pub use terminal::TerminalTool;
 pub use manager::{
     ActiveTerminalSession, CommandManager, CompletedTerminalSession, TerminalCommandResult,
     TerminalManager, TerminalOutputResponse,
@@ -57,17 +55,11 @@ pub async fn start_server(
                 // Create managers for terminal tools
                 let terminal_manager = Arc::new(crate::TerminalManager::new());
 
-                // Register 2 terminal tools (was 5)
+                // Register unified terminal tool
                 let (tool_router, prompt_router) = register_tool(
                     tool_router,
                     prompt_router,
-                    crate::TerminalRunCommandTool::new(terminal_manager.clone()),
-                );
-
-                let (tool_router, prompt_router) = register_tool(
-                    tool_router,
-                    prompt_router,
-                    crate::SendTerminalInputTool::new(terminal_manager.clone()),
+                    crate::TerminalTool::new(terminal_manager.clone()),
                 );
 
                 // Start cleanup task

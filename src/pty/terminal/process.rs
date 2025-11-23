@@ -7,120 +7,47 @@ impl Terminal {
     /// Close the terminal and kill the child process
     ///
     /// This method:
-    /// - Checks if the child process has already exited (non-blocking)
-    /// - Kills the child process if it's still running
-    /// - Signals the writer task to stop by dropping the sender
-    /// - Waits for both reader and writer tasks to complete with adaptive timeouts
+    /// - Signals the event loop to stop by dropping the sender
+    /// - Waits for the event loop thread to complete
     ///
     /// For clean shutdown, call this method explicitly before dropping the Terminal.
     /// The Drop implementation provides best-effort cleanup but cannot await.
     ///
-    /// # Adaptive Timeouts
-    ///
-    /// Task wait timeouts are adaptive based on process state:
-    /// - **Process already dead**: 100ms timeout (tasks should exit quickly)
-    /// - **Process still running**: 5s timeout (allow graceful shutdown)
-    ///
-    /// This optimization prevents unnecessary waits when stopping already-exited processes.
-    ///
     /// # Errors
     ///
     /// Returns error if:
-    /// - Reader or writer tasks panicked during execution
-    /// - Tasks failed to join properly
-    /// - Timeout does NOT cause error (logged only)
+    /// - Event loop thread panicked during execution
+    /// - Thread failed to join properly
+    /// - Timeout (after 5 seconds)
     pub async fn close(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Drop sender first to signal writer task exit
-        // This makes rx.recv() return None, cleanly exiting the writer loop
+        // Drop sender to signal event loop shutdown
+        // The event loop's channel receiver will return None, cleanly exiting the loop
         drop(self.sender.take());
 
-        // Check if process has already exited BEFORE attempting kill
-        let process_already_dead = if self.is_pty_closed() {
-            log::debug!("PTY already closed (process exited)");
-            true
-        } else {
-            // Process still running - drop PTY to kill it
-            log::debug!("Dropping PTY to kill child process");
-            self.pty = None;
-            false  // Process was alive (just killed it)
-        };
-
-        // Adaptive timeout based on process state
-        let task_timeout = if process_already_dead {
-            Duration::from_millis(100)  // Dead process = tasks should exit quickly
-        } else {
-            Duration::from_secs(5)  // Running process = allow graceful shutdown
-        };
-
-        // Collect first error but don't return early - must complete ALL cleanup
-        let mut first_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
-
-        // Wait for reader task with adaptive timeout
-        if let Some(handle) = self.reader_task.take() {
-            match timeout(task_timeout, handle).await {
-                Ok(Ok(())) => {
-                    log::debug!("Reader task completed successfully");
+        // Wait for event loop thread to finish (it owns the PTY and will clean it up)
+        log::debug!("Waiting for event loop thread to finish");
+        if let Some(handle) = self.event_loop_thread.take() {
+            let timeout_duration = Duration::from_secs(5);
+            match timeout(
+                timeout_duration,
+                tokio::task::spawn_blocking(move || handle.join())
+            ).await {
+                Ok(Ok(Ok(()))) => {
+                    log::debug!("Event loop thread completed successfully");
+                }
+                Ok(Ok(Err(_))) => {
+                    log::error!("Event loop thread panicked");
+                    return Err("Event loop thread panicked".into());
                 }
                 Ok(Err(e)) => {
-                    log::error!("Reader task panicked or was cancelled: {e:?}");
-                    if e.is_panic() {
-                        // Collect error but CONTINUE to writer await and cleanup
-                        first_error = first_error.or(Some(Box::new(e)));
-                    }
+                    log::error!("Failed to join event loop thread: {}", e);
+                    return Err(e.into());
                 }
                 Err(_) => {
-                    if process_already_dead {
-                        log::warn!(
-                            "Reader task timeout after {}ms (process already dead). \
-                             This suggests the reader is stuck on blocking I/O.",
-                            task_timeout.as_millis()
-                        );
-                    } else {
-                        log::error!(
-                            "Reader task timeout after {}s - forcing drop. Task may still be running.",
-                            task_timeout.as_secs()
-                        );
-                    }
-                    // Handle dropped, task will be cancelled
+                    log::error!("Event loop thread timeout after 5s - forcing drop");
+                    return Err("Timeout waiting for event loop".into());
                 }
             }
-        }
-
-        // ALWAYS await writer task (even if reader failed)
-        if let Some(handle) = self.writer_task.take() {
-            match timeout(task_timeout, handle).await {
-                Ok(Ok(())) => {
-                    log::debug!("Writer task completed successfully");
-                }
-                Ok(Err(e)) => {
-                    log::error!("Writer task panicked or was cancelled: {e:?}");
-                    if e.is_panic() {
-                        // Collect error but CONTINUE to cleanup
-                        first_error = first_error.or(Some(Box::new(e)));
-                    }
-                }
-                Err(_) => {
-                    if process_already_dead {
-                        log::warn!(
-                            "Writer task timeout after {}ms (process already dead). \
-                             This suggests the writer is stuck on blocking I/O.",
-                            task_timeout.as_millis()
-                        );
-                    } else {
-                        log::error!(
-                            "Writer task timeout after {}s - forcing drop. Task may still be running.",
-                            task_timeout.as_secs()
-                        );
-                    }
-                    // Handle dropped, task will be cancelled
-                }
-            }
-        }
-
-        // Return first error AFTER all cleanup complete
-        // Note: PTY master is owned by writer task and dropped when task ends
-        if let Some(err) = first_error {
-            return Err(err);
         }
 
         Ok(())
@@ -128,102 +55,53 @@ impl Terminal {
 
     /// Wait for child process to exit and return exit status
     ///
-    /// Note: Alacritty's PTY handles child process management internally.
-    /// This polls for child exit events.
-    #[allow(clippy::await_holding_lock)]  // parking_lot::Mutex is sync, not async - intentional design
+    /// Note: Since the PTY is owned by the event loop thread, we poll the pty_closed flag.
+    /// Exit code is not available - returns 0 when process exits.
     pub async fn wait(&mut self) -> io::Result<i32> {
-        #[cfg(unix)]
-        {
-            use alacritty_terminal::tty::{ChildEvent, EventedPty};
-
-            if let Some(pty) = &self.pty {
-                let mut pty_guard = pty.lock();
-
-                // Poll for child exit event
-                loop {
-                    if let Some(event) = pty_guard.next_child_event() {
-                        match event {
-                            ChildEvent::Exited(code) => return Ok(code.unwrap_or(-1)),
-                        }
-                    }
-
-                    // Small delay to avoid busy-waiting
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-            } else {
-                Err(io::Error::other("No PTY to wait for"))
-            }
+        // Poll pty_closed flag until process exits
+        while !self.is_pty_closed() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
-
-        #[cfg(windows)]
-        {
-            // Windows PTY doesn't expose next_child_event() yet
-            // Fall back to checking pty_closed flag
-            while !self.is_pty_closed() {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-            }
-            Ok(0)  // Unknown exit code on Windows
-        }
+        Ok(0) // Exit code not available (PTY owned by event loop)
     }
 
     /// Try to get exit status without waiting (non-blocking)
+    ///
+    /// Note: Since the PTY is owned by the event loop thread, we check the pty_closed flag.
+    /// Exit code is not available - returns Some(0) when process exits, None if still running.
     pub async fn try_wait(&mut self) -> io::Result<Option<i32>> {
-        #[cfg(unix)]
-        {
-            use alacritty_terminal::tty::{ChildEvent, EventedPty};
-
-            if let Some(pty) = &self.pty {
-                let mut pty_guard = pty.lock();
-
-                // Check for child exit event (non-blocking)
-                if let Some(event) = pty_guard.next_child_event() {
-                    match event {
-                        ChildEvent::Exited(code) => Ok(Some(code.unwrap_or(-1))),
-                    }
-                } else {
-                    Ok(None)  // Still running
-                }
-            } else {
-                Err(io::Error::other("No PTY to check"))
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            // Windows PTY doesn't expose next_child_event() yet
-            // Fall back to checking pty_closed flag
-            if self.is_pty_closed() {
-                Ok(Some(0))  // Unknown exit code on Windows
-            } else {
-                Ok(None)
-            }
+        if self.is_pty_closed() {
+            Ok(Some(0)) // Exit code not available (PTY owned by event loop)
+        } else {
+            Ok(None) // Still running
         }
     }
 
     /// Send signal to child process (Unix only)
     ///
-    /// Note: Alacritty's PTY doesn't expose direct process ID access.
-    /// To kill the process, drop the PTY (self.pty = None).
+    /// Uses the stored PID to send signals directly via libc::kill().
     #[cfg(unix)]
     pub async fn signal(&mut self, sig: i32) -> io::Result<()> {
-        // Alacritty's PTY doesn't expose process ID directly.
-        // The standard way to kill is to drop the PTY.
-        if sig == 9 || sig == 15 {  // SIGKILL or SIGTERM
-            self.pty = None;  // Dropping PTY kills child
+        let pid = self.child_pid.ok_or_else(|| {
+            io::Error::other("Terminal not initialized - no child PID")
+        })?;
+
+        // Send signal using libc::kill()
+        let result = unsafe { libc::kill(pid as i32, sig) };
+
+        if result == 0 {
             Ok(())
         } else {
-            Err(io::Error::other("Only SIGKILL and SIGTERM supported via PTY drop"))
+            Err(io::Error::last_os_error())
         }
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // If exit_on_close is true, drop PTY to kill the child process
-        // Note: We can't await in Drop, so this is best-effort cleanup
-        // Users should call close() explicitly for guaranteed cleanup
-        if self.config.exit_on_close {
-            self.pty = None;  // Dropping PTY kills child
+        #[cfg(unix)]
+        if let Some(pid) = self.child_pid {
+            let _ = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
         }
     }
 }

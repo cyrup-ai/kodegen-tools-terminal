@@ -6,7 +6,7 @@
 use super::constants::{
     ACTIVE_SESSION_RETENTION_SECS, CLEANUP_INTERVAL_SECS, COMPLETED_SESSION_RETENTION_SECS,
 };
-use super::types::CompletedTerminalSession;
+use super::types::{CompletedTerminalSession, TerminalSessionInfo};
 use chrono::Utc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,17 +35,17 @@ impl super::TerminalManager {
         let initial_count = sessions.len();
 
         // Collect sessions to remove - can't call async close() inside retain()
-        let mut to_remove = Vec::new(); // Active sessions to just remove
-        let mut to_complete = Vec::new(); // Completed sessions to move
+        let mut to_remove: Vec<((String, u32), TerminalSessionInfo)> = Vec::new();
+        let mut to_complete: Vec<((String, u32), TerminalSessionInfo)> = Vec::new();
 
-        for (pid, session) in sessions.iter() {
+        for ((connection_id, terminal_id), session) in sessions.iter() {
             // Check completion status from terminal
             let is_complete = {
                 let terminal = session.terminal.read().await;
                 terminal.is_pty_closed()
             };
 
-            let last_read = session.last_read_time.try_read().map(|t| *t).unwrap_or(now);
+            let last_read = *session.last_read_time.read().await;
 
             // Differentiated retention based on completion status
             let should_keep = if is_complete {
@@ -57,35 +57,40 @@ impl super::TerminalManager {
             };
 
             if !should_keep {
+                let key = (connection_id.clone(), *terminal_id);
                 if is_complete {
-                    to_complete.push((*pid, session.clone()));
+                    to_complete.push((key, session.clone()));
                 } else {
-                    to_remove.push((*pid, session.clone()));
+                    to_remove.push((key, session.clone()));
                 }
             }
         }
 
         // Close terminals BEFORE removing from HashMap (prevents resource leaks)
-        for (pid, session) in &to_remove {
-            log::debug!("Closing terminal for inactive session PID {pid}");
+        for (key, session) in &to_remove {
+            log::debug!("Closing terminal for inactive session: connection_id={}, terminal_id={}", 
+                       key.0, key.1);
             let mut terminal = session.terminal.write().await;
             if let Err(e) = terminal.close().await {
-                log::error!("Failed to close terminal for PID {pid}: {e}");
+                log::error!("Failed to close terminal: connection_id={}, terminal_id={}, error={}", 
+                           key.0, key.1, e);
             }
         }
 
         // Close terminals for completed sessions too
-        for (pid, session) in &to_complete {
-            log::debug!("Closing terminal for completed session PID {pid}");
+        for (key, session) in &to_complete {
+            log::debug!("Closing terminal for completed session: connection_id={}, terminal_id={}", 
+                       key.0, key.1);
             let mut terminal = session.terminal.write().await;
             if let Err(e) = terminal.close().await {
-                log::error!("Failed to close terminal for PID {pid}: {e}");
+                log::error!("Failed to close terminal: connection_id={}, terminal_id={}, error={}", 
+                           key.0, key.1, e);
             }
         }
 
         // Now safe to remove from HashMap
-        for (pid, _) in to_remove {
-            sessions.remove(&pid);
+        for (key, _) in to_remove {
+            sessions.remove(&key);
         }
 
         // Move completed sessions to completed_sessions HashMap
@@ -97,8 +102,9 @@ impl super::TerminalManager {
 
             // Remove from active sessions first
             let mut sessions = self.sessions.lock().await;
-            for (pid, session) in to_complete {
-                sessions.remove(&pid);
+            for (key, session) in to_complete {
+                let (connection_id, terminal_id) = key.clone();
+                sessions.remove(&key);
 
                 // Get final exit code if available
                 let exit_code = {
@@ -118,13 +124,13 @@ impl super::TerminalManager {
 
                 // Convert timestamps (session.start_time is DateTime<Utc>, need SystemTime)
                 let start_time = {
-                    let duration_secs = (Utc::now() - session.start_time).num_seconds();
-                    if duration_secs > 0 {
+                    let chrono_duration: chrono::Duration = Utc::now() - session.start_time;
+                    if let Ok(std_duration) = chrono_duration.to_std() {
                         std::time::SystemTime::now()
-                            .checked_sub(Duration::from_secs(duration_secs as u64))
+                            .checked_sub(std_duration)
                             .unwrap_or_else(std::time::SystemTime::now)
                     } else {
-                        // Clock skew: start_time is in future, use current time
+                        // Negative duration (clock skew): start_time is in future, use current time
                         std::time::SystemTime::now()
                     }
                 };
@@ -133,14 +139,15 @@ impl super::TerminalManager {
 
                 // Create completed session record
                 let completed_session = CompletedTerminalSession {
-                    pid,
+                    connection_id,
+                    terminal_id,
                     output,
                     exit_code,
                     start_time,
                     end_time,
                 };
 
-                completed.insert(pid, completed_session);
+                completed.insert(key, completed_session);
             }
 
             log::info!("Moved {moved_count} sessions to completed_sessions");
@@ -167,14 +174,17 @@ impl super::TerminalManager {
         let mut completed = self.completed_sessions.lock().await;
         let initial_count = completed.len();
 
-        completed.retain(|pid, session| {
+        completed.retain(|(connection_id, terminal_id), session| {
             let age = now
                 .duration_since(session.end_time)
                 .unwrap_or(Duration::ZERO);
             let should_keep = age < cutoff;
 
             if !should_keep {
-                log::debug!("Removing old completed session PID {pid} (age: {age:?})");
+                log::debug!(
+                    "Removing old completed session: connection_id={}, terminal_id={} (age: {:?})",
+                    connection_id, terminal_id, age
+                );
             }
 
             should_keep

@@ -14,18 +14,24 @@ impl super::TerminalManager {
     /// Uses `terminal.close()` which handles graceful SIGTERM → SIGKILL escalation.
     ///
     /// # Parameters
-    /// - `pid`: Process ID to terminate
+    /// - `connection_id`: Connection identifier from stdio server
+    /// - `terminal_id`: Terminal number to terminate
     ///
     /// # Errors
     /// - `McpError::InvalidArguments`: Session not found
     /// - `McpError::Other`: Terminal close failed
-    pub async fn force_terminate(&self, pid: u32) -> Result<(), McpError> {
-        // 1. Get session
+    pub async fn force_terminate(&self, connection_id: &str, terminal_id: u32) -> Result<(), McpError> {
+        // 1. Get session using composite key
         let sessions = self.sessions.lock().await;
+        let key = (connection_id.to_string(), terminal_id);
         let session = sessions
-            .get(&pid)
+            .get(&key)
             .ok_or_else(|| {
-                McpError::InvalidArguments(format!("No active session found for PID: {pid}"))
+                McpError::InvalidArguments(format!(
+                    "No active terminal found: connection_id={}, terminal_id={}",
+                    connection_id,
+                    terminal_id
+                ))
             })?
             .clone();
         drop(sessions);
@@ -34,23 +40,28 @@ impl super::TerminalManager {
         let mut terminal = session.terminal.write().await;
         terminal.close().await.map_err(|e| {
             McpError::Other(anyhow::anyhow!(
-                "Failed to close terminal for PID {pid}: {e}"
+                "Failed to close terminal: connection_id={}, terminal_id={}, error={}",
+                connection_id,
+                terminal_id,
+                e
             ))
         })?;
 
         log::warn!(
-            "Session terminated: pid={}, runtime={}s",
-            pid,
+            "Terminal terminated: connection_id={}, terminal_id={}, runtime={}s",
+            connection_id,
+            terminal_id,
             (Utc::now() - session.start_time).num_seconds()
         );
         Ok(())
     }
 
-    /// Get a session by PID, returns the PID if session exists
-    pub async fn get_session(&self, pid: u32) -> Option<u32> {
+    /// Get a session by connection_id and terminal_id, returns the terminal_id if session exists
+    pub async fn get_session(&self, connection_id: &str, terminal_id: u32) -> Option<u32> {
+        let key = (connection_id.to_string(), terminal_id);
         let sessions_guard = self.sessions.lock().await;
-        if sessions_guard.contains_key(&pid) {
-            Some(pid)
+        if sessions_guard.contains_key(&key) {
+            Some(terminal_id)
         } else {
             None
         }

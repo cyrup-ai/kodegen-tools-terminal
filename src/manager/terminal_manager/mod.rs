@@ -13,8 +13,8 @@
 //! - `cleanup`: Session cleanup and background task management
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
 use tokio::sync::Mutex;
 
 // Submodule declarations
@@ -45,24 +45,25 @@ pub use types::{
 /// # Architecture
 ///
 /// The manager maintains two collections:
-/// - `sessions`: Active sessions being tracked
+/// - `sessions`: Active sessions being tracked (keyed by (session_id, terminal_id))
 /// - `completed_sessions`: Recently completed sessions (retained briefly for querying)
 ///
-/// Sessions are identified by synthetic PIDs (not OS PIDs) starting from 1000.
+/// Sessions are identified by a composite key: (session_id, terminal_id)
+/// - `session_id`: String identifier for the session (e.g., "default", "user-session-1")
+/// - `terminal_id`: Numeric identifier starting from 1000
 ///
 /// # Implementation Methods
 ///
 /// Methods are implemented across multiple submodules:
-/// - `spawn_command`, `execute_command` → `session_lifecycle.rs`
+/// - `spawn_command` → `session_lifecycle.rs`
 /// - `get_output`, `send_input` → `session_io.rs`
 /// - `force_terminate`, `get_session` → `session_control.rs`
 /// - `list_active_sessions`, `list_completed_sessions`, `metrics` → `session_queries.rs`
 /// - `cleanup_sessions`, `start_cleanup_task` → `cleanup.rs`
 #[derive(Clone)]
 pub struct TerminalManager {
-    sessions: Arc<Mutex<HashMap<u32, TerminalSessionInfo>>>,
-    completed_sessions: Arc<Mutex<HashMap<u32, CompletedTerminalSession>>>,
-    next_pid: Arc<AtomicU32>,
+    sessions: Arc<Mutex<HashMap<(String, u32), TerminalSessionInfo>>>,
+    completed_sessions: Arc<Mutex<HashMap<(String, u32), CompletedTerminalSession>>>,
 }
 
 impl TerminalManager {
@@ -72,8 +73,29 @@ impl TerminalManager {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             completed_sessions: Arc::new(Mutex::new(HashMap::new())),
-            next_pid: Arc::new(AtomicU32::new(1000)),
         }
+    }
+
+    /// Get the current working directory of a terminal
+    ///
+    /// Queries the PTY child process's CWD using OS-specific APIs.
+    ///
+    /// # Parameters
+    /// - `connection_id`: Connection identifier from stdio server
+    /// - `terminal_id`: Terminal number (1, 2, 3...)
+    ///
+    /// # Returns
+    /// The current working directory, or None if terminal not found or CWD unavailable
+    pub async fn get_terminal_cwd(&self, connection_id: &str, terminal_id: u32) -> Option<PathBuf> {
+        let key = (connection_id.to_string(), terminal_id);
+        let sessions = self.sessions.lock().await;
+        if let Some(info) = sessions.get(&key) {
+            let terminal = info.terminal.read().await;
+            if let Some(pid) = terminal.try_get_pid() {
+                return crate::pty::cwd::get_cwd(pid).ok();
+            }
+        }
+        None
     }
 }
 

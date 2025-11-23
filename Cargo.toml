@@ -28,11 +28,10 @@ macos = "public.app-category.developer-tools"
 
 
 [dependencies]
-kodegen_mcp_schema = { version = "0.3" }
-kodegen_mcp_tool = { version = "0.3" }
-kodegen_config_manager = { version = "0.3" }
-kodegen_utils = { version = "0.3" }
-kodegen_server_http = { version = "0.3" }
+kodegen_mcp_schema = { version = "0.3", path = "../kodegen-mcp-schema" }
+kodegen_mcp_tool = { version = "0.3", path = "../kodegen-mcp-tool" }
+kodegen_config_manager = { version = "0.3", path = "../kodegen-config-manager" }
+kodegen_server_http = { version = "0.3", path = "../kodegen-server-http" }
 
 # MCP SDK - for Tool implementation
 rmcp = { version = "0.9", features = ["client", "schemars", "server"] }
@@ -57,26 +56,14 @@ env_logger = "0.11"
 # Error handling - for error conversion in terminal_manager
 anyhow = "1"
 
-# TLS support - for embedded server mode
-rustls = "0.23"
-
 # Core terminal emulation dependencies (Alacritty-based)
 alacritty_terminal = "0.25"
 vte = "0.15"                # MUST match alacritty_terminal's vte version exactly
-unicode-width = "0.2.2"     # For proper wide character handling
-base64 = "0.22.1"           # For alacritty_terminal's image protocol support
-bitflags = "2.10.0"          # For alacritty_terminal's cell flags
-home = "0.5.12"              # For shell path resolution
-regex-automata = "0.4.13"    # For alacritty_terminal's search features (optional)
 
 # PTY I/O
 bytes = "1"
 parking_lot = "0.12.5"
-
-[dev-dependencies]
-kodegen_mcp_client = { version = "0.3" }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+polling = "3.11"
 
 # Platform-specific PTY support (Unix)
 [target.'cfg(unix)'.dependencies]

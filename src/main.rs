@@ -9,6 +9,10 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info")
+    ).init();
+
     run_http_server("terminal", |_config, _tracker| {
         Box::pin(async move {
             let tool_router = ToolRouter::new();
@@ -18,17 +22,11 @@ async fn main() -> Result<()> {
             // Create managers for terminal tools
             let terminal_manager = Arc::new(kodegen_tools_terminal::TerminalManager::new());
 
-            // Register 2 terminal tools (was 5)
+            // Register unified terminal tool
             let (tool_router, prompt_router) = register_tool(
                 tool_router,
                 prompt_router,
-                kodegen_tools_terminal::TerminalRunCommandTool::new(terminal_manager.clone()),
-            );
-
-            let (tool_router, prompt_router) = register_tool(
-                tool_router,
-                prompt_router,
-                kodegen_tools_terminal::SendTerminalInputTool::new(terminal_manager.clone()),
+                kodegen_tools_terminal::TerminalTool::new(terminal_manager.clone()),
             );
 
             // CRITICAL: Start cleanup task after all tools are registered

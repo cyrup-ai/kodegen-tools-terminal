@@ -5,7 +5,6 @@
 //! - Sending interactive input to PTY
 
 use super::types::TerminalOutputResponse;
-use bytes::Bytes;
 use std::time::Instant;
 use alacritty_terminal::index::{Line, Column};
 use alacritty_terminal::grid::Dimensions;
@@ -16,7 +15,8 @@ impl super::TerminalManager {
     /// Extracts text from the VT100 screen buffer with pagination support.
     ///
     /// # Parameters
-    /// - `pid`: Process ID
+    /// - `connection_id`: Connection identifier from stdio server
+    /// - `terminal_id`: Terminal number (1, 2, 3...)
     /// - `offset`: Starting line (negative = tail from end)
     /// - `length`: Maximum lines to return
     ///
@@ -24,23 +24,29 @@ impl super::TerminalManager {
     /// Terminal output with pagination info, or None if session not found
     pub async fn get_output(
         &self,
-        pid: u32,
+        connection_id: &str,
+        terminal_id: u32,
         offset: i64,
         length: usize,
     ) -> Option<TerminalOutputResponse> {
-        // 1. Get session
+        // 1. Get session using composite key
         let sessions = self.sessions.lock().await;
-        let session = sessions.get(&pid)?;
+        let key = (connection_id.to_string(), terminal_id);
+        let session = sessions.get(&key)?;
 
         // 2. Get Grid, calculate pagination, and extract lines using direct indexing
-        let (lines, total_lines, start, end, is_complete) = {
+        let (lines, total_lines, start, end) = {
             let terminal = session.terminal.read().await;
-            let term = terminal.term.read().await;
-            let grid = term.grid();
+            let term_arc = terminal.term.clone();
 
-            // Get grid dimensions
-            let history_size = grid.history_size();
-            let columns = grid.columns();
+            // Use spawn_blocking to access FairMutex from async context
+            tokio::task::spawn_blocking(move || {
+                let term = term_arc.lock_unfair();
+                let grid = term.grid();
+
+                // Get grid dimensions
+                let history_size = grid.history_size();
+                let columns = grid.columns();
 
             log::debug!("get_output: grid dimensions - history_size={}, columns={}, screen_lines={}", 
                        history_size, columns, grid.screen_lines());
@@ -133,11 +139,30 @@ impl super::TerminalManager {
                 lines.push(line_str);
             }
 
-            let complete = terminal.is_pty_closed();
-            (lines, total, start, end, complete)
+            (lines, total, start, end)
+        }).await.ok()?
         }; // Read lock automatically dropped here
 
-        // 4. Get exit code with write lock (separate, minimal critical section)
+        // 3. Detect prompt and update still_running
+        let output_text = lines.join("\n");
+        let ready_for_input = super::repl_detection::detect_repl_ready(&output_text);
+        let is_complete = ready_for_input;
+
+        // 4. Get CWD from TerminalManager::get_terminal_cwd
+        let cwd = self.get_terminal_cwd(connection_id, terminal_id).await;
+
+        // 5. Update session state and get exit code (with sessions lock held)
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions.get_mut(&(connection_id.to_string(), terminal_id))?;
+
+        // Update prompt detection results
+        session.still_running = !ready_for_input;
+        session.ready_for_input = ready_for_input;
+
+        // Update last read time
+        *session.last_read_time.write().await = Instant::now();
+
+        // Get exit code if command completed
         let exit_code = if is_complete {
             let mut terminal = session.terminal.write().await;
             terminal
@@ -151,11 +176,9 @@ impl super::TerminalManager {
 
         let has_more = end < total_lines || !is_complete;
 
-        // 7. Update last read time
-        *session.last_read_time.write().await = Instant::now();
-
         Some(TerminalOutputResponse {
-            pid,
+            connection_id: connection_id.to_string(),
+            terminal_id,
             lines,
             total_lines,
             lines_returned: end - start,
@@ -163,6 +186,7 @@ impl super::TerminalManager {
             exit_code,
             has_more,
             buffer_truncated: Some(false), // VT100 scrollback handles truncation
+            cwd,
         })
     }
 
@@ -171,7 +195,8 @@ impl super::TerminalManager {
     /// Sends text to the PTY with optional newline appending.
     ///
     /// # Parameters
-    /// - `pid`: Process ID
+    /// - `connection_id`: Connection identifier from stdio server
+    /// - `terminal_id`: Terminal number (1, 2, 3...)
     /// - `input`: Text to send
     /// - `append_newline`: If true, appends '\n' to execute command (default: true)
     ///
@@ -179,15 +204,21 @@ impl super::TerminalManager {
     /// Ok(true) if successful, Err if session not found
     pub async fn send_input(
         &self,
-        pid: u32,
+        connection_id: &str,
+        terminal_id: u32,
         input: &str,
         append_newline: bool,
     ) -> Result<bool, anyhow::Error> {
         // 1. Get session (clone to release lock quickly)
         let sessions = self.sessions.lock().await;
+        let key = (connection_id.to_string(), terminal_id);
         let session = sessions
-            .get(&pid)
-            .ok_or_else(|| anyhow::anyhow!("Process {pid} not found"))?
+            .get(&key)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Terminal not found: connection_id={}, terminal_id={}",
+                connection_id,
+                terminal_id
+            ))?
             .clone();
         drop(sessions); // Release lock before async PTY call
 
@@ -195,28 +226,58 @@ impl super::TerminalManager {
         let terminal = session.terminal.read().await;
 
         let bytes = if append_newline {
-            // Avoid intermediate String allocation from format!
             let mut buf = Vec::with_capacity(input.len() + 1);
             buf.extend_from_slice(input.as_bytes());
             buf.push(b'\n');
-            Bytes::from(buf)
+            buf
         } else {
-            // Direct copy without intermediate Vec allocation
-            Bytes::copy_from_slice(input.as_bytes())
+            input.as_bytes().to_vec()
         };
 
         terminal.send_input(bytes).await?;
         drop(terminal);
 
-        log::debug!("Input sent: pid={}, bytes={}", pid, input.len());
+        log::debug!("Input sent: connection_id={}, terminal_id={}, bytes={}", 
+                   connection_id, terminal_id, input.len());
 
         // 3. Update session state
         let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(&pid) {
+        if let Some(session) = sessions.get_mut(&key) {
             session.still_running = false;
             session.ready_for_input = false;
         }
 
         Ok(true)
+    }
+
+    /// Subscribe to real-time output broadcast for a terminal session
+    ///
+    /// Returns a broadcast receiver that receives Alacritty Grid snapshots after each VTE update.
+    /// This enables real-time streaming of terminal output to clients.
+    ///
+    /// # Parameters
+    /// - `connection_id`: Connection identifier from stdio server
+    /// - `terminal_id`: Terminal number (1, 2, 3...)
+    ///
+    /// # Returns
+    /// Broadcast receiver for output, or None if session not found
+    ///
+    /// # Notes
+    /// - The broadcast channel may lag under heavy output (RecvError::Lagged)
+    /// - Lagged messages are acceptable for streaming (best-effort delivery)
+    /// - For complete, authoritative output, always use `get_output()` after completion
+    /// - This provides real-time UX; Grid via get_output() is the single source of truth
+    pub async fn subscribe_output(
+        &self,
+        connection_id: &str,
+        terminal_id: u32,
+    ) -> Option<tokio::sync::broadcast::Receiver<()>> {
+        let sessions = self.sessions.lock().await;
+        let key = (connection_id.to_string(), terminal_id);
+        let session = sessions.get(&key)?;
+
+        // Get Terminal and call subscribe_output()
+        let terminal = session.terminal.read().await;
+        Some(terminal.subscribe_output())
     }
 }

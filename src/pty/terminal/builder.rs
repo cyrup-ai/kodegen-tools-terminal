@@ -1,33 +1,28 @@
 use std::{
     collections::HashMap,
+    io,
+    path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
 };
-use tokio::sync::mpsc::channel;
-use tokio::sync::RwLock;
-use vte::ansi::Processor;
+use tokio::sync::broadcast;
 use alacritty_terminal::term::{Term as AlacrittyTerm, Config as AlacrittyConfig};
+use alacritty_terminal::tty::{Options as PtyOptions, Shell};
+use alacritty_terminal::event::WindowSize;
 
-use super::types::{BellStyle, ColorMode, TermSize, Terminal, TerminalConfig, HeadlessEventProxy};
+use super::types::{TermSize, Terminal, TerminalConfig, HeadlessEventProxy};
+use super::sync::FairMutex;
+use super::shell::get_default_shell;
+use super::event_loop::spawn_event_loop;
 
 /// Builder for creating Terminal instances with a fluent API
 #[derive(Default)]
 pub struct TerminalBuilder {
     rows: Option<u16>,
     cols: Option<u16>,
-    command: Option<String>,
     cwd: Option<String>,
     env_vars: HashMap<String, String>,
-    shell: bool,
     shell_path: Option<String>,
-    colors: ColorMode,
     scrollback: usize,
-    cursor_blink: bool,
-    application_cursor_keys: bool,
-    bracketed_paste: bool,
-    mouse_reporting: bool,
-    alternate_screen: bool,
-    exit_on_close: bool,
-    bell_style: BellStyle,
 }
 
 impl TerminalBuilder {
@@ -38,7 +33,6 @@ impl TerminalBuilder {
             // Default to a comfortable terminal size
             rows: Some(30),
             cols: Some(100),
-            command: None,
             cwd: None,
             env_vars: HashMap::from([
                 // Enable truecolor support by default
@@ -48,17 +42,8 @@ impl TerminalBuilder {
                 // Prefer more modern terminal features
                 ("TERM".to_string(), "xterm-256color".to_string()),
             ]),
-            shell: false,
             shell_path: None,
-            colors: ColorMode::TrueColor,
             scrollback: 10000, // Generous scrollback by default
-            cursor_blink: true,
-            application_cursor_keys: true,
-            bracketed_paste: true,
-            mouse_reporting: true,
-            alternate_screen: false, // Start in normal screen mode
-            exit_on_close: true,     // Clean exit by default
-            bell_style: BellStyle::Visual,
         }
     }
 
@@ -67,12 +52,6 @@ impl TerminalBuilder {
     pub fn size(mut self, rows: u16, cols: u16) -> Self {
         self.rows = Some(rows);
         self.cols = Some(cols);
-        self
-    }
-
-    /// Set command to execute
-    pub fn command(mut self, cmd: impl Into<String>) -> Self {
-        self.command = Some(cmd.into());
         self
     }
 
@@ -101,23 +80,9 @@ impl TerminalBuilder {
         self
     }
 
-    /// Use interactive shell mode
-    #[must_use]
-    pub fn shell(mut self, enable: bool) -> Self {
-        self.shell = enable;
-        self
-    }
-
     /// Specify which shell executable to use (overrides default detection)
     pub fn shell_path(mut self, path: impl Into<String>) -> Self {
         self.shell_path = Some(path.into());
-        self
-    }
-
-    /// Set color mode
-    #[must_use]
-    pub fn colors(mut self, mode: ColorMode) -> Self {
-        self.colors = mode;
         self
     }
 
@@ -128,154 +93,111 @@ impl TerminalBuilder {
         self
     }
 
-    /// Force color output for child processes
-    #[must_use]
-    pub fn force_color(mut self, enable: bool) -> Self {
-        if enable {
-            self.env_vars
-                .insert("FORCE_COLOR".to_string(), "1".to_string());
-            self.env_vars
-                .insert("CLICOLOR_FORCE".to_string(), "1".to_string());
-            self.env_vars
-                .insert("RUST_LOG_STYLE".to_string(), "always".to_string());
-        }
-        self
-    }
-
-    /// Configure cursor blinking
-    #[must_use]
-    pub fn cursor_blink(mut self, enable: bool) -> Self {
-        self.cursor_blink = enable;
-        self
-    }
-
-    /// Enable/disable application cursor keys mode
-    #[must_use]
-    pub fn application_cursor_keys(mut self, enable: bool) -> Self {
-        self.application_cursor_keys = enable;
-        self
-    }
-
-    /// Enable/disable bracketed paste mode
-    #[must_use]
-    pub fn bracketed_paste(mut self, enable: bool) -> Self {
-        self.bracketed_paste = enable;
-        self
-    }
-
-    /// Enable/disable mouse reporting
-    #[must_use]
-    pub fn mouse_reporting(mut self, enable: bool) -> Self {
-        self.mouse_reporting = enable;
-        self
-    }
-
-    /// Use alternate screen buffer
-    #[must_use]
-    pub fn alternate_screen(mut self, enable: bool) -> Self {
-        self.alternate_screen = enable;
-        self
-    }
-
-    /// Control whether to kill process on terminal close
-    #[must_use]
-    pub fn exit_on_close(mut self, enable: bool) -> Self {
-        self.exit_on_close = enable;
-        self
-    }
-
-    /// Set bell style
-    #[must_use]
-    pub fn bell_style(mut self, style: BellStyle) -> Self {
-        self.bell_style = style;
-        self
-    }
-
-    /// Preset for minimal terminal (good for running simple commands)
-    #[must_use]
-    pub fn minimal(mut self) -> Self {
-        self.scrollback = 100;
-        self.cursor_blink = false;
-        self.application_cursor_keys = false;
-        self.bracketed_paste = false;
-        self.mouse_reporting = false;
-        self.alternate_screen = false;
-        self.exit_on_close = true;
-        self
-    }
-
-    /// Preset for full-featured interactive terminal
-    #[must_use]
-    pub fn interactive(mut self) -> Self {
-        self.scrollback = 10000;
-        self.cursor_blink = true;
-        self.application_cursor_keys = true;
-        self.bracketed_paste = true;
-        self.mouse_reporting = true;
-        self.alternate_screen = true;
-        self.exit_on_close = false;
-        self.colors = ColorMode::TrueColor;
-        self
-    }
-
-    /// Build the terminal with all the configured options
-    #[must_use]
-    pub fn build(self) -> Terminal {
+    /// Build and initialize the terminal with all configured options
+    ///
+    /// Creates a fully initialized terminal with:
+    /// - Alacritty Term for terminal emulation
+    /// - VTE Processor for ANSI escape sequences
+    /// - Platform-specific PTY (Unix/Windows)
+    /// - Event loop thread for I/O
+    ///
+    /// Returns a ready-to-use Terminal (no separate init() needed).
+    pub async fn build(self) -> io::Result<Terminal> {
         // Use sensible defaults for anything not specified
         let rows = self.rows.unwrap_or(30);
         let cols = self.cols.unwrap_or(100);
 
-        // Create channels for PTY I/O
-        let (sender, receiver) = channel(100);
+        let term_size = TermSize {
+            cols,
+            rows,
+            scrollback: self.scrollback,
+        };
 
-        let term_size = TermSize { cols, rows };
+        // Create configuration from builder settings
+        let config = TerminalConfig {
+            cwd: self.cwd.clone(),
+            env_vars: self.env_vars.clone(),
+            shell_path: self.shell_path.clone(),
+            scrollback: self.scrollback,
+        };
 
-        // Create Alacritty Term with HeadlessEventProxy
-        // Note: The real initialization happens in init() which sets scrollback via AlacrittyConfig
-        // Here we create a temporary term that will be replaced during init()
+        // 1. Build Alacritty Config for Term
         let alacritty_config = AlacrittyConfig {
             scrolling_history: self.scrollback,
             ..Default::default()
         };
+
+        // 2. Create Term with HeadlessEventProxy (wrapped in FairMutex)
         let event_proxy = HeadlessEventProxy;
-        let term = AlacrittyTerm::new(alacritty_config, &term_size, event_proxy);
+        let term = AlacrittyTerm::new(
+            alacritty_config,
+            &term_size,
+            event_proxy,
+        );
 
-        // Create VTE processor
-        let processor = Arc::new(RwLock::new(Processor::default()));
-        let term = Arc::new(RwLock::new(term));
+        let term = Arc::new(FairMutex::new(term));
 
-        // Create configuration from builder settings
-        let config = TerminalConfig {
-            command: self.command,
-            cwd: self.cwd,
-            env_vars: self.env_vars,
-            shell: self.shell,
-            shell_path: self.shell_path,
-            colors: self.colors,
-            scrollback: self.scrollback,
-            cursor_blink: self.cursor_blink,
-            application_cursor_keys: self.application_cursor_keys,
-            bracketed_paste: self.bracketed_paste,
-            mouse_reporting: self.mouse_reporting,
-            alternate_screen: self.alternate_screen,
-            exit_on_close: self.exit_on_close,
-            bell_style: self.bell_style,
+        // 3. Build PtyOptions from TerminalConfig
+        // ALWAYS start interactive shell (no -c, stays open for follow-up commands!)
+        let default_shell = get_default_shell();
+        let shell_exe = self.shell_path.as_deref().unwrap_or(&default_shell);
+        let shell = Some(Shell::new(shell_exe.to_string(), vec![]));
+
+        let pty_options = PtyOptions {
+            shell,
+            working_directory: self.cwd.as_ref().map(PathBuf::from),
+            drain_on_exit: true,
+            env: self.env_vars.clone(),
+
+            #[cfg(target_os = "windows")]
+            escape_args: true,
         };
 
-        Terminal {
+        // 4. Create WindowSize for PTY
+        let window_size = WindowSize {
+            num_lines: rows,
+            num_cols: cols,
+            cell_width: 0,   // Pixel dimensions (not needed for headless)
+            cell_height: 0,
+        };
+
+        // 5. Create platform-specific PTY using alacritty_terminal::tty::new()
+        // This automatically selects Unix PTY or Windows ConPTY at compile time
+        log::debug!("Creating interactive PTY shell");
+        let pty = alacritty_terminal::tty::new(&pty_options, window_size, 0)
+            .map_err(|e| io::Error::other(format!("Failed to create PTY: {e}")))?;
+        log::info!("PTY created successfully");
+
+        // 6. Capture child PID BEFORE moving PTY (PID is immutable after spawn)
+        let child_pid = pty.child().id();
+        log::debug!("Captured child PID: {}", child_pid);
+
+        // 7. Create broadcast channel for screen update notifications (capacity: 1000)
+        let (output_broadcast, _) = broadcast::channel::<()>(1000);
+        let output_broadcast = Arc::new(output_broadcast);
+
+        // 8. Move PTY into event loop (returns handle + InputSender)
+        // The generic spawn_event_loop function works with any type implementing EventedPty
+        let pty_closed = Arc::new(AtomicBool::new(false));
+        log::info!("Spawning PTY event loop thread with direct PTY ownership");
+        let (event_loop_handle, input_sender) = spawn_event_loop(
+            pty,  // PTY moved here, no longer accessible
+            term.clone(),
+            output_broadcast.clone(),
+            pty_closed.clone(),
+        )?;
+
+        log::info!("Terminal initialized with perfect event loop architecture");
+
+        Ok(Terminal {
             term,
-            processor,
-            sender: Some(sender),
-            receiver: Some(receiver),
+            sender: Some(input_sender),
             size: term_size,
-            pty_closed: Arc::new(AtomicBool::new(false)),
+            pty_closed,
             config,
-            pty: None,
-            pty_bytes_tx: None,
-            pty_bytes_rx: None,
-            reader_task: None,
-            processor_task: None,
-            writer_task: None,
-        }
+            event_loop_thread: Some(event_loop_handle),
+            child_pid: Some(child_pid),
+            output_broadcast,
+        })
     }
 }

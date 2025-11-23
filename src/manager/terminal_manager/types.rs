@@ -39,7 +39,12 @@ pub struct TerminalMetrics {
 /// Terminal session information for internal tracking (active sessions)
 #[derive(Clone)]
 pub struct TerminalSessionInfo {
-    pub pid: u32,
+    /// Connection ID from kodegen stdio server (for isolation)
+    pub connection_id: String,
+
+    /// Terminal number within this connection (1, 2, 3...)
+    pub terminal_id: u32,
+
     pub command: String,
 
     // NEW: Direct terminal reference encapsulates all state
@@ -57,17 +62,20 @@ pub struct TerminalSessionInfo {
 /// Active terminal session information for external API
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveTerminalSession {
-    pub pid: u32,
+    pub connection_id: String,
+    pub terminal_id: u32,
+    pub command: String,
     pub still_running: bool,
     /// Runtime in milliseconds
     pub runtime: u64,
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// Response for `get_output` (paginated terminal output)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalOutputResponse {
-    /// Process ID
-    pub pid: u32,
+    pub connection_id: String,
+    pub terminal_id: u32,
 
     /// Lines returned in this page
     pub lines: Vec<String>,
@@ -90,12 +98,16 @@ pub struct TerminalOutputResponse {
     /// Indicates if buffer reached size limit (early output may be lost)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub buffer_truncated: Option<bool>,
+
+    /// Current working directory (if process still running)
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// Completed terminal session information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletedTerminalSession {
-    pub pid: u32,
+    pub connection_id: String,
+    pub terminal_id: u32,
     pub output: String,
     pub exit_code: Option<i32>,
     pub start_time: std::time::SystemTime,
@@ -105,7 +117,8 @@ pub struct CompletedTerminalSession {
 /// Result of terminal command execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalCommandResult {
-    pub pid: u32,
+    pub connection_id: String,
+    pub terminal_id: u32,
     pub output: String,
     pub still_running: bool,
     pub ready_for_input: bool,

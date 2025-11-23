@@ -7,40 +7,59 @@
 
 use super::types::{ActiveTerminalSession, CompletedTerminalSession, TerminalMetrics};
 use chrono::Utc;
-use std::sync::atomic::Ordering as AtomicOrdering;
 
 impl super::TerminalManager {
-    /// List all active terminal sessions
-    #[must_use]
-    pub fn list_active_sessions(&self) -> Vec<ActiveTerminalSession> {
-        if let Ok(sessions_guard) = self.sessions.try_lock() {
-            let now = Utc::now();
-            sessions_guard
-                .values()
-                .map(|session| {
-                    // Convert runtime to milliseconds, clamping negative to 0
-                    let runtime_ms = (now - session.start_time).num_milliseconds();
-                    let runtime = u64::try_from(runtime_ms).unwrap_or(0);
-                    ActiveTerminalSession {
-                        pid: session.pid,
-                        still_running: session.still_running,
-                        runtime,
+    /// List all active terminal sessions, optionally filtered by connection_id
+    ///
+    /// # Parameters
+    /// - `connection_id`: Optional filter for specific connection (None = all connections)
+    pub async fn list_active_sessions(&self, connection_id: Option<&str>) -> Vec<ActiveTerminalSession> {
+        let sessions_guard = self.sessions.lock().await;
+        let now = Utc::now();
+
+        let mut results = Vec::new();
+        for ((conn_id, tid), session) in sessions_guard.iter() {
+            if connection_id.map(|id| id == conn_id.as_str()).unwrap_or(true) {
+                // Convert runtime to milliseconds, clamping negative to 0
+                let runtime_ms = (now - session.start_time).num_milliseconds();
+                let runtime = u64::try_from(runtime_ms).unwrap_or(0);
+
+                // Get CWD using async read
+                let cwd = {
+                    let term = session.terminal.read().await;
+                    if let Some(pid) = term.try_get_pid() {
+                        crate::pty::cwd::get_cwd(pid).ok()
+                    } else {
+                        None
                     }
-                })
-                .collect()
-        } else {
-            Vec::new()
+                };
+
+                results.push(ActiveTerminalSession {
+                    connection_id: conn_id.clone(),
+                    terminal_id: *tid,
+                    command: session.command.clone(),
+                    still_running: session.still_running,
+                    runtime,
+                    cwd,
+                });
+            }
         }
+        results
     }
 
-    /// List all completed terminal sessions
-    #[must_use]
-    pub fn list_completed_sessions(&self) -> Vec<CompletedTerminalSession> {
-        if let Ok(completed_guard) = self.completed_sessions.try_lock() {
-            completed_guard.values().cloned().collect()
-        } else {
-            Vec::new()
-        }
+    /// List all completed terminal sessions, optionally filtered by connection_id
+    ///
+    /// # Parameters
+    /// - `connection_id`: Optional filter for specific connection (None = all connections)
+    pub async fn list_completed_sessions(&self, connection_id: Option<&str>) -> Vec<CompletedTerminalSession> {
+        let completed_guard = self.completed_sessions.lock().await;
+        completed_guard
+            .iter()
+            .filter(|((conn_id, _tid), _session)| {
+                connection_id.map(|id| id == conn_id.as_str()).unwrap_or(true)
+            })
+            .map(|((_conn_id, _tid), session)| session.clone())
+            .collect()
     }
 
     /// Get metrics for monitoring terminal session health
@@ -70,8 +89,8 @@ impl super::TerminalManager {
             0.0
         };
 
-        // Get total sessions created from atomic counter
-        let total_created = u64::from(self.next_pid.load(AtomicOrdering::SeqCst)) - 1000;
+        // Calculate total sessions created from current + completed counts
+        let total_created = sessions.len() as u64 + completed.len() as u64;
 
         TerminalMetrics {
             total_sessions_created: total_created,
