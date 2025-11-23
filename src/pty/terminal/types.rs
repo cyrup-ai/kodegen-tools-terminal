@@ -60,6 +60,10 @@ pub struct Terminal {
     /// Broadcast channel for screen update notifications
     /// Subscribers get notified when screen changes, then call screen() for actual data
     pub(super) output_broadcast: Arc<broadcast::Sender<()>>,
+
+    /// Broadcast channel for bell (BEL/\x07) notifications
+    /// Subscribers get notified when terminal receives bell character (command completion marker)
+    pub(super) bell_broadcast: Arc<broadcast::Sender<()>>,
 }
 
 impl Clone for Terminal {
@@ -73,6 +77,7 @@ impl Clone for Terminal {
             event_loop_thread: None,  // Thread handle not cloneable; PTY owned by original instance
             child_pid: self.child_pid,  // u32 is Copy
             output_broadcast: self.output_broadcast.clone(),
+            bell_broadcast: self.bell_broadcast.clone(),
         }
     }
 }
@@ -174,6 +179,15 @@ impl Terminal {
     #[must_use]
     pub fn subscribe_output(&self) -> broadcast::Receiver<()> {
         self.output_broadcast.subscribe()
+    }
+
+    /// Subscribe to bell (BEL/\x07) events
+    ///
+    /// Returns a broadcast receiver that receives notifications when terminal receives BEL character.
+    /// Used for command completion detection when commands are wrapped with `;printf '\x07'`.
+    #[must_use]
+    pub fn subscribe_bell(&self) -> broadcast::Receiver<()> {
+        self.bell_broadcast.subscribe()
     }
 }
 

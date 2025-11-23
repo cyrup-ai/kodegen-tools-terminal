@@ -134,6 +134,7 @@ pub fn spawn_event_loop<T>(
     mut pty: T,
     term: Arc<FairMutex<Term<HeadlessEventProxy>>>,
     output_broadcast: Arc<broadcast::Sender<()>>,
+    bell_broadcast: Arc<broadcast::Sender<()>>,
     pty_closed: Arc<AtomicBool>,
 ) -> io::Result<(std::thread::JoinHandle<()>, InputSender)>
 where
@@ -205,7 +206,7 @@ where
                         }
 
                         if event.readable {
-                            match pty_read(&mut pty, &term, &mut state, &mut buf, &output_broadcast) {
+                            match pty_read(&mut pty, &term, &mut state, &mut buf, &output_broadcast, &bell_broadcast) {
                                 Ok(0) => {
                                     log::info!("PTY EOF detected");
                                     pty_closed.store(true, Ordering::SeqCst);
@@ -274,17 +275,20 @@ where
 /// 4. Process VTE sequences while holding lock
 /// 5. Release lock after MAX_LOCKED_READ bytes to prevent starvation
 /// 6. Broadcast screen contents
+/// 7. Detect and broadcast bell (BEL/\x07) for command completion
 fn pty_read<T: EventedPty>(
     pty: &mut T,
     term: &Arc<FairMutex<Term<HeadlessEventProxy>>>,
     state: &mut EventLoopState,
     buf: &mut [u8],
     output_broadcast: &broadcast::Sender<()>,
+    bell_broadcast: &broadcast::Sender<()>,
 ) -> io::Result<usize> {
     log::debug!("pty_read: Starting");
     let mut unprocessed = 0;
     let mut processed = 0;
     let mut terminal_lock = None;
+    let mut bell_detected = false;
 
     // Reserve the next terminal lock for PTY reading (prevents starvation from external API calls)
     let _terminal_lease = Some(term.lease());
@@ -329,6 +333,24 @@ fn pty_read<T: EventedPty>(
             }
         };
 
+        // Check for bell character (BEL/\x07) BEFORE VTE processing
+        // This allows us to detect command completion markers
+
+        // DEBUG: Hex dump to see actual bytes
+        let bytes_slice = &buf[..unprocessed];
+        let hex_dump: String = bytes_slice.iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        log::debug!("pty_read: Checking {} bytes for bell: {}", unprocessed, hex_dump);
+
+        if buf[..unprocessed].contains(&0x07) {
+            log::info!("Bell character detected in PTY output (\\x07 found)");
+            bell_detected = true;
+        } else {
+            log::debug!("pty_read: No bell character in this chunk");
+        }
+
         // Process VTE bytes (blocking, synchronous - NO async, NO tokio runtime!)
         // ONLY ONE LOCK NOW - processor lives in state, no mutex needed
         state.processor.advance(&mut **term_guard, &buf[..unprocessed]);
@@ -347,6 +369,12 @@ fn pty_read<T: EventedPty>(
         // Broadcast lightweight notification (non-blocking, ignore if no receivers)
         // Receivers call get_output() or screen() to get actual data
         let _ = output_broadcast.send(());
+    }
+
+    // Broadcast bell event if detected (for command completion detection)
+    if bell_detected {
+        log::info!("Broadcasting bell event (command completion marker)");
+        let _ = bell_broadcast.send(());
     }
 
     Ok(processed)

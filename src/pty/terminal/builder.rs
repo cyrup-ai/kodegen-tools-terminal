@@ -172,9 +172,12 @@ impl TerminalBuilder {
         let child_pid = pty.child().id();
         log::debug!("Captured child PID: {}", child_pid);
 
-        // 7. Create broadcast channel for screen update notifications (capacity: 1000)
+        // 7. Create broadcast channels for screen and bell notifications (capacity: 1000)
         let (output_broadcast, _) = broadcast::channel::<()>(1000);
         let output_broadcast = Arc::new(output_broadcast);
+
+        let (bell_broadcast, _) = broadcast::channel::<()>(1000);
+        let bell_broadcast = Arc::new(bell_broadcast);
 
         // 8. Move PTY into event loop (returns handle + InputSender)
         // The generic spawn_event_loop function works with any type implementing EventedPty
@@ -184,10 +187,11 @@ impl TerminalBuilder {
             pty,  // PTY moved here, no longer accessible
             term.clone(),
             output_broadcast.clone(),
+            bell_broadcast.clone(),
             pty_closed.clone(),
         )?;
 
-        log::info!("Terminal initialized with perfect event loop architecture");
+        log::info!("Terminal initialized with perfect event loop architecture + bell detection");
 
         Ok(Terminal {
             term,
@@ -198,6 +202,7 @@ impl TerminalBuilder {
             event_loop_thread: Some(event_loop_handle),
             child_pid: Some(child_pid),
             output_broadcast,
+            bell_broadcast,
         })
     }
 }

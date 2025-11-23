@@ -20,24 +20,3 @@ pub const MAX_OUTPUT_BUFFER_LINES: usize = 10_000;
 
 /// Maximum concurrent sessions allowed
 pub const MAX_SESSIONS: usize = 100;
-
-/// REPL prompt patterns for detecting when a REPL is ready for input
-pub const REPL_PROMPTS: &[&str] = &[
-    ">>> ",       // Python
-    "... ",       // Python continuation
-    ">> ",        // R
-    "> ",         // R, various shells, Node.js
-    "$ ",         // Bash/Zsh
-    "# ",         // Root shell
-    "λ> ",        // Haskell
-    "ghci> ",     // Haskell GHCi
-    "irb> ",      // Ruby IRB
-    "irb(main):", // Ruby IRB with context
-    "node> ",     // Node.js
-    "julia> ",    // Julia
-    "mysql> ",    // MySQL
-    "postgres=#", // PostgreSQL
-    "sqlite> ",   // SQLite
-    "In [",       // IPython/Jupyter (special case)
-    "Out[",       // IPython/Jupyter output
-];

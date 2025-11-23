@@ -1,7 +1,6 @@
 use kodegen_tools_terminal::TerminalManager;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::broadcast::error::RecvError;
 
 const CONNECTION_ID: &str = "example-session";
 
@@ -28,57 +27,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Helper: spawn shell, send command, wait for completion using subscribe_output
-async fn spawn_and_wait(
+/// Helper: execute command with bell-based completion detection
+async fn execute_command(
     manager: &TerminalManager,
     connection_id: &str,
     terminal_id: u32,
     command: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Spawn interactive shell (no command sent yet)
-    manager.spawn_command(connection_id, terminal_id, None).await?;
-
-    // 2. Subscribe to output BEFORE sending command (avoid race condition)
-    let mut output_rx = manager.subscribe_output(connection_id, terminal_id).await
-        .ok_or("Terminal not found after spawn")?;
-
-    // 3. Send command to shell via stdin
-    manager.send_input(connection_id, terminal_id, command, true).await?;
-
-    // 4. Event-driven completion detection with periodic polling
-    loop {
-        // Use timeout to periodically check is_complete even if no output broadcast
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            output_rx.recv()
-        ).await {
-            Ok(Ok(_screen_content)) => {
-                // Received output update - check if command completed
-                if let Some(resp) = manager.get_output(connection_id, terminal_id, 0, 1).await
-                    && resp.is_complete
-                {
-                    break;  // Command finished!
-                }
-            }
-            Ok(Err(RecvError::Lagged(_))) => {
-                // Missed messages - resubscribe and continue
-                output_rx = manager.subscribe_output(connection_id, terminal_id).await
-                    .ok_or("Terminal closed")?;
-            }
-            Ok(Err(RecvError::Closed)) => {
-                // Graceful fallback (won't occur with Arc<broadcast::Sender> in struct)
-                break;
-            }
-            Err(_timeout) => {
-                // Timeout - check is_complete flag periodically
-                if let Some(resp) = manager.get_output(connection_id, terminal_id, 0, 1).await
-                    && resp.is_complete
-                {
-                    break;  // Command finished!
-                }
-            }
-        }
-    }
+    // Use TerminalManager's execute_command_with_completion (with bell detection)
+    manager.execute_command_with_completion(
+        connection_id,
+        terminal_id,
+        command,
+        std::time::Duration::from_secs(30),  // 30 second timeout for tests
+        || false,  // No cancellation
+        |_output| async {
+            // No-op streaming callback for examples
+        },
+    ).await?;
 
     Ok(())
 }
@@ -90,7 +56,7 @@ async fn test_terminal_reuse(
     log::info!("{}", "=".repeat(80));
 
     log::info!("\nStep 1: Create /tmp/kodegen_test and cd into it");
-    spawn_and_wait(
+    execute_command(
         manager,
         CONNECTION_ID,
         1,
@@ -100,7 +66,6 @@ async fn test_terminal_reuse(
     let output1 = manager.get_output(CONNECTION_ID, 1, 0, usize::MAX).await
         .ok_or("Terminal 1 not found")?;
     log::info!("  Output: {}", output1.lines.join("\n").trim());
-    assert!(output1.is_complete, "Command should be complete");
 
     log::info!("\nStep 2: Create file (same terminal - reuse)");
     manager.send_input(CONNECTION_ID, 1, "echo 'Hello Terminal 1' > test.txt\n", false).await?;
@@ -144,9 +109,9 @@ async fn test_parallel_terminals(
 
     // Spawn all terminals in parallel and wait for completion
     let (r1, r2, r3) = tokio::join!(
-        spawn_and_wait(manager, CONNECTION_ID, 2, "sleep 2 && echo 'Task 1 complete'"),
-        spawn_and_wait(manager, CONNECTION_ID, 3, "echo 'Task 2 complete immediately'"),
-        spawn_and_wait(manager, CONNECTION_ID, 4, "sleep 1 && echo 'Task 3 complete'"),
+        execute_command(manager, CONNECTION_ID, 2, "sleep 2 && echo 'Task 1 complete'"),
+        execute_command(manager, CONNECTION_ID, 3, "echo 'Task 2 complete immediately'"),
+        execute_command(manager, CONNECTION_ID, 4, "sleep 1 && echo 'Task 3 complete'"),
     );
 
     r1?;
@@ -181,7 +146,7 @@ async fn test_error_handling(
     log::info!("{}", "=".repeat(80));
 
     log::info!("\nStep 1: Run failing command");
-    spawn_and_wait(manager, CONNECTION_ID, 5, "cat /this/does/not/exist").await?;
+    execute_command(manager, CONNECTION_ID, 5, "cat /this/does/not/exist").await?;
 
     let output1 = manager.get_output(CONNECTION_ID, 5, 0, usize::MAX).await
         .ok_or("Terminal 5 not found")?;

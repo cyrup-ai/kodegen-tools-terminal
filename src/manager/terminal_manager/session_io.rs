@@ -143,38 +143,24 @@ impl super::TerminalManager {
         }).await.ok()?
         }; // Read lock automatically dropped here
 
-        // 3. Detect prompt and update still_running
-        let output_text = lines.join("\n");
-        let ready_for_input = super::repl_detection::detect_repl_ready(&output_text);
-        let is_complete = ready_for_input;
-
-        // 4. Get CWD from TerminalManager::get_terminal_cwd
+        // 3. Get CWD from TerminalManager::get_terminal_cwd
         let cwd = self.get_terminal_cwd(connection_id, terminal_id).await;
 
-        // 5. Update session state and get exit code (with sessions lock held)
+        // 4. Update session state and get exit code (with sessions lock held)
         let mut sessions = self.sessions.lock().await;
         let session = sessions.get_mut(&(connection_id.to_string(), terminal_id))?;
-
-        // Update prompt detection results
-        session.still_running = !ready_for_input;
-        session.ready_for_input = ready_for_input;
 
         // Update last read time
         *session.last_read_time.write().await = Instant::now();
 
-        // Get exit code if command completed
-        let exit_code = if is_complete {
+        // Try to get exit code (best effort, non-blocking)
+        let exit_code = {
             let mut terminal = session.terminal.write().await;
-            terminal
-                .try_wait()
-                .await
-                .ok()
-                .flatten()
-        } else {
-            None
+            terminal.try_wait().await.ok().flatten()
         };
 
-        let has_more = end < total_lines || !is_complete;
+        let is_complete = false;
+        let has_more = end < total_lines;
 
         Some(TerminalOutputResponse {
             connection_id: connection_id.to_string(),
@@ -185,7 +171,7 @@ impl super::TerminalManager {
             is_complete,
             exit_code,
             has_more,
-            buffer_truncated: Some(false), // VT100 scrollback handles truncation
+            buffer_truncated: Some(false),
             cwd,
         })
     }
@@ -237,15 +223,8 @@ impl super::TerminalManager {
         terminal.send_input(bytes).await?;
         drop(terminal);
 
-        log::debug!("Input sent: connection_id={}, terminal_id={}, bytes={}", 
+        log::debug!("Input sent: connection_id={}, terminal_id={}, bytes={}",
                    connection_id, terminal_id, input.len());
-
-        // 3. Update session state
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(&key) {
-            session.still_running = false;
-            session.ready_for_input = false;
-        }
 
         Ok(true)
     }
@@ -280,4 +259,232 @@ impl super::TerminalManager {
         let terminal = session.terminal.read().await;
         Some(terminal.subscribe_output())
     }
+
+    /// Subscribe to bell (BEL/\x07) events for a terminal session
+    ///
+    /// Returns a broadcast receiver that receives notifications when terminal receives BEL character.
+    /// Used for command completion detection when commands are wrapped with `;printf '\x07'`.
+    ///
+    /// # Parameters
+    /// - `connection_id`: Connection identifier from stdio server
+    /// - `terminal_id`: Terminal number (1, 2, 3...)
+    ///
+    /// # Returns
+    /// Broadcast receiver for bell events, or None if session not found
+    pub async fn subscribe_bell(
+        &self,
+        connection_id: &str,
+        terminal_id: u32,
+    ) -> Option<tokio::sync::broadcast::Receiver<()>> {
+        let sessions = self.sessions.lock().await;
+        let key = (connection_id.to_string(), terminal_id);
+        let session = sessions.get(&key)?;
+
+        // Get Terminal and call subscribe_bell()
+        let terminal = session.terminal.read().await;
+        Some(terminal.subscribe_bell())
+    }
+
+    /// Execute command with bell-based completion detection and real-time streaming
+    ///
+    /// This is the main method for executing commands in persistent terminal sessions.
+    /// It handles:
+    /// - Terminal creation/reuse
+    /// - Command wrapping with bell marker for completion detection
+    /// - Real-time output streaming
+    /// - Timeout and cancellation
+    ///
+    /// # Parameters
+    /// - `connection_id`: Connection identifier
+    /// - `terminal_id`: Terminal number (1, 2, 3...)
+    /// - `command`: Shell command to execute
+    /// - `timeout`: Maximum execution time
+    /// - `is_cancelled`: Cancellation check function
+    /// - `stream_callback`: Async callback for streaming output updates (can be no-op)
+    ///
+    /// # Returns
+    /// Final output with exit code and metadata
+    pub async fn execute_command_with_completion<F, Fut>(
+        &self,
+        connection_id: &str,
+        terminal_id: u32,
+        command: &str,
+        timeout: std::time::Duration,
+        is_cancelled: F,
+        mut stream_callback: impl FnMut(String) -> Fut,
+    ) -> Result<TerminalOutputResponse, anyhow::Error>
+    where
+        F: Fn() -> bool,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let start = Instant::now();
+
+        // ========== PHASE 1: TERMINAL SETUP ==========
+
+        // Check if terminal exists, create if needed
+        let terminal_exists = self.get_session(connection_id, terminal_id)
+            .await
+            .is_some();
+
+        if !terminal_exists {
+            // Create new interactive shell (no command sent yet)
+            self.spawn_command(connection_id, terminal_id, None).await?;
+        }
+
+        // ========== PHASE 2: STREAMING SETUP ==========
+
+        // Subscribe to broadcast channels BEFORE sending command (avoid race condition)
+        let mut output_rx = self.subscribe_output(connection_id, terminal_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Terminal session not found after creation"))?;
+
+        let mut bell_rx = self.subscribe_bell(connection_id, terminal_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Terminal session not found for bell subscription"))?;
+
+        // Wrap command with bell marker for completion detection
+        // Format: (command); printf '\x07'
+        // - Subshell isolates command execution
+        // - ; (not &&) ensures bell fires even if command fails
+        // - \x07 is BEL character that triggers bell event
+        let wrapped_command = format!("({}); printf '\\x07'", command);
+
+        // Send wrapped command to shell
+        self.send_input(connection_id, terminal_id, &wrapped_command, true).await?;
+
+        // ========== PHASE 3: REAL-TIME STREAMING LOOP ==========
+
+        let mut last_output = String::new();
+
+        loop {
+            // Check cancellation
+            if is_cancelled() {
+                self.force_terminate(connection_id, terminal_id).await.ok();
+                return Err(anyhow::anyhow!("Command execution cancelled by user"));
+            }
+
+            // Check timeout
+            if start.elapsed() > timeout {
+                // Get final output before terminating
+                let final_output = self.get_output(connection_id, terminal_id, 0, usize::MAX)
+                    .await
+                    .map(|r| r.lines.join("\n"))
+                    .unwrap_or_else(|| last_output.clone());
+
+                self.force_terminate(connection_id, terminal_id).await.ok();
+
+                return Err(anyhow::anyhow!(
+                    "Command timed out after {:?}. Last output:\n{}",
+                    timeout,
+                    final_output
+                ));
+            }
+
+            // Try to receive output or bell notification (non-blocking with timeout)
+            tokio::select! {
+                // Output update notification
+                result = output_rx.recv() => {
+                    use tokio::sync::broadcast::error::RecvError;
+                    match result {
+                        Ok(()) => {
+                            // Screen updated - get actual content
+                            let screen_content = self.get_output(connection_id, terminal_id, 0, usize::MAX)
+                                .await
+                                .map(|r| r.lines.join("\n"))
+                                .unwrap_or_default();
+
+                            last_output = screen_content.clone();
+
+                            // Truncate for streaming (last 30 lines or 2000 chars)
+                            let display = truncate_for_streaming(&screen_content);
+
+                            // Stream to callback (fire-and-forget)
+                            stream_callback(display).await;
+                        }
+                        Err(RecvError::Lagged(n)) => {
+                            // Missed some messages due to lag - resubscribe and continue
+                            log::warn!("Output stream lagged by {} messages (resubscribing)", n);
+
+                            output_rx = self.subscribe_output(connection_id, terminal_id)
+                                .await
+                                .ok_or_else(|| anyhow::anyhow!("Terminal closed"))?;
+                        }
+                        Err(RecvError::Closed) => {
+                            // Channel closed - terminal finished
+                            log::info!("Output broadcast channel closed");
+                            break;
+                        }
+                    }
+                }
+
+                // Bell event (command completion marker)
+                result = bell_rx.recv() => {
+                    use tokio::sync::broadcast::error::RecvError;
+                    match result {
+                        Ok(()) => {
+                            log::info!("Bell event received - command completed");
+                            // Get final output before breaking
+                            let screen_content = self.get_output(connection_id, terminal_id, 0, usize::MAX)
+                                .await
+                                .map(|r| r.lines.join("\n"))
+                                .unwrap_or_default();
+                            last_output = screen_content;
+                            break;
+                        }
+                        Err(RecvError::Lagged(_)) => {
+                            // Bell channel lagged - resubscribe
+                            bell_rx = self.subscribe_bell(connection_id, terminal_id)
+                                .await
+                                .ok_or_else(|| anyhow::anyhow!("Terminal closed"))?;
+                        }
+                        Err(RecvError::Closed) => {
+                            log::info!("Bell broadcast channel closed");
+                            break;
+                        }
+                    }
+                }
+
+                // Timeout after 100ms of no events
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    // No events - continue polling
+                }
+            }
+        }
+
+        // ========== PHASE 4: FINAL OUTPUT COLLECTION ==========
+
+        // Get complete, authoritative output from Alacritty Grid
+        let output_response = self.get_output(connection_id, terminal_id, 0, usize::MAX)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Terminal not found after completion"))?;
+
+        Ok(output_response)
+    }
+}
+
+/// Truncate output for streaming to avoid overwhelming the client
+///
+/// Shows last 30 lines or 2000 chars, whichever is smaller.
+/// Final output via get_output() is never truncated.
+fn truncate_for_streaming(content: &str) -> String {
+    const MAX_STREAM_CHARS: usize = 2000;
+    const MAX_STREAM_LINES: usize = 30;
+
+    if content.len() <= MAX_STREAM_CHARS {
+        return content.to_string();
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    if lines.len() <= MAX_STREAM_LINES {
+        return content.to_string();
+    }
+
+    // Show last N lines
+    let tail_lines = &lines[lines.len().saturating_sub(MAX_STREAM_LINES)..];
+    format!(
+        "...\n[{} earlier lines omitted for streaming]\n{}",
+        lines.len() - tail_lines.len(),
+        tail_lines.join("\n")
+    )
 }

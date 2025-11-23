@@ -20,7 +20,6 @@ use tokio::sync::Mutex;
 // Submodule declarations
 mod cleanup;
 mod constants;
-mod repl_detection;
 mod session_control;
 mod session_io;
 mod session_lifecycle;

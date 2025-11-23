@@ -6,7 +6,6 @@ use rmcp::model::{Content, PromptArgument, PromptMessage, PromptMessageRole, Pro
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::broadcast::error::RecvError;
 
 // ============================================================================
 // TOOL IMPLEMENTATION
@@ -62,153 +61,41 @@ impl Tool for TerminalTool {
         let start = Instant::now();
         const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
-        // ========== PHASE 1: INITIALIZATION ==========
+        // Clone ctx for closures (needed because ctx is moved)
+        let ctx_for_cancel = ctx.clone();
+        let ctx_for_stream = ctx.clone();
 
         // Extract connection_id from context (use default for examples/tests)
         let connection_id = ctx.connection_id()
             .unwrap_or("example-session");
 
-        let terminal_id = args.terminal;
-
-        // Terminal reuse logic: Check if terminal exists
-        let terminal_exists = self.terminal_manager
-            .get_session(connection_id, terminal_id)
-            .await
-            .is_some();
-
-        if !terminal_exists {
-            // Create new interactive shell (no command sent yet)
-            self.terminal_manager
-                .spawn_command(connection_id, terminal_id, None)
-                .await
-                .map_err(McpError::Other)?;
-        }
-
-        // ========== PHASE 2: STREAMING SETUP ==========
-
-        // Subscribe to broadcast channel BEFORE sending command (avoid race condition)
-        let mut output_rx = self.terminal_manager
-            .subscribe_output(connection_id, terminal_id)
-            .await
-            .ok_or_else(|| McpError::Other(anyhow::anyhow!(
-                "Terminal session not found after creation"
-            )))?;
-
-        // Send command to shell (works for both new and existing terminals)
-        self.terminal_manager
-            .send_input(connection_id, terminal_id, &args.command, true)
+        // Delegate to TerminalManager with streaming callback
+        let output_response = self.terminal_manager
+            .execute_command_with_completion(
+                connection_id,
+                args.terminal,
+                &args.command,
+                DEFAULT_TIMEOUT,
+                move || ctx_for_cancel.is_cancelled(),
+                move |display| {
+                    let ctx = ctx_for_stream.clone();
+                    async move {
+                        ctx.stream(&display).await.ok();
+                    }
+                },
+            )
             .await
             .map_err(McpError::Other)?;
 
-        // ========== PHASE 3: REAL-TIME STREAMING LOOP ==========
-
-        let mut last_output = String::new();
-
-        loop {
-            // Check cancellation
-            if ctx.is_cancelled() {
-                self.terminal_manager
-                    .force_terminate(connection_id, terminal_id)
-                    .await
-                    .ok();
-                return Err(McpError::Other(
-                    anyhow::anyhow!("Command execution cancelled by user")
-                ));
-            }
-
-            // Check timeout
-            if start.elapsed() > DEFAULT_TIMEOUT {
-                // Get final output before terminating
-                let final_output = self.terminal_manager
-                    .get_output(connection_id, terminal_id, 0, usize::MAX)
-                    .await
-                    .map(|r| r.lines.join("\n"))
-                    .unwrap_or_else(|| last_output.clone());
-
-                self.terminal_manager
-                    .force_terminate(connection_id, terminal_id)
-                    .await
-                    .ok();
-
-                return Err(McpError::Other(anyhow::anyhow!(
-                    "Command timed out after 5 minutes. Last output:\n{}", final_output
-                )));
-            }
-
-            // Try to receive screen update notification (non-blocking with timeout)
-            match tokio::time::timeout(Duration::from_millis(100), output_rx.recv()).await {
-                Ok(Ok(())) => {
-                    // Screen updated - get actual content
-                    let screen_content = self.terminal_manager
-                        .get_output(connection_id, terminal_id, 0, usize::MAX)
-                        .await
-                        .map(|r| r.lines.join("\n"))
-                        .unwrap_or_default();
-
-                    last_output = screen_content.clone();
-
-                    // Truncate for streaming (last 30 lines or 2000 chars)
-                    let display = truncate_for_streaming(&screen_content);
-
-                    // Stream to user (fire-and-forget)
-                    ctx.stream(&display).await.ok();
-                }
-                Ok(Err(RecvError::Lagged(n))) => {
-                    // Missed some messages due to lag - resubscribe and continue
-                    log::warn!("Output stream lagged by {} messages (resubscribing)", n);
-
-                    output_rx = self.terminal_manager
-                        .subscribe_output(connection_id, terminal_id)
-                        .await
-                        .ok_or_else(|| McpError::Other(anyhow::anyhow!("Terminal closed")))?;
-                }
-                Ok(Err(RecvError::Closed)) => {
-                    // Channel closed - terminal finished
-                    log::info!("Broadcast channel closed, command completed");
-                    break;
-                }
-                Err(_) => {
-                    // Timeout - check if terminal is still running via authoritative get_output()
-                    let output_response = self.terminal_manager
-                        .get_output(connection_id, terminal_id, 0, 1)
-                        .await;
-
-                    if let Some(resp) = output_response {
-                        if resp.is_complete {
-                            log::info!("Terminal completed (detected via get_output)");
-                            break;
-                        }
-                    } else {
-                        // Session not found - terminal was cleaned up
-                        log::warn!("Terminal session not found (possibly cleaned up)");
-                        break;
-                    }
-                }
-            }
-        }
-
-        // ========== PHASE 4: FINAL OUTPUT COLLECTION ==========
-
-        // Get complete, authoritative output from Alacritty Grid
-        let output_response = self.terminal_manager
-            .get_output(connection_id, terminal_id, 0, usize::MAX)
-            .await
-            .ok_or_else(|| McpError::Other(anyhow::anyhow!(
-                "Terminal not found after completion"
-            )))?;
-
+        // Format response
         let final_output = output_response.lines.join("\n");
         let exit_code = output_response.exit_code.unwrap_or(-1);
-
-        // Get CWD
-        let cwd = self.terminal_manager
-            .get_terminal_cwd(connection_id, terminal_id)
-            .await
+        let cwd = output_response.cwd
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "/".to_string());
 
         let output = TerminalOutput {
-            terminal: terminal_id,
+            terminal: args.terminal,
             output: final_output,
             exit_code,
             cwd,
@@ -275,35 +162,4 @@ impl Tool for TerminalTool {
             },
         ])
     }
-}
-
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-/// Truncate output for streaming to avoid overwhelming the client
-///
-/// Shows last 30 lines or 2000 chars, whichever is smaller.
-/// Final output via get_output() is never truncated.
-fn truncate_for_streaming(content: &str) -> String {
-    const MAX_STREAM_CHARS: usize = 2000;
-    const MAX_STREAM_LINES: usize = 30;
-
-    if content.len() <= MAX_STREAM_CHARS {
-        return content.to_string();
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    if lines.len() <= MAX_STREAM_LINES {
-        return content.to_string();
-    }
-
-    // Show last N lines
-    let tail_lines = &lines[lines.len().saturating_sub(MAX_STREAM_LINES)..];
-    format!(
-        "...\n[{} earlier lines omitted for streaming]\n{}",
-        lines.len() - tail_lines.len(),
-        tail_lines.join("\n")
-    )
 }
