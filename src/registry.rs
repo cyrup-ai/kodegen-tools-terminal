@@ -1,6 +1,7 @@
 //! Terminal registry - manages multiple terminal instances
 
 use crate::pty::terminal::Terminal;
+use kodegen_mcp_schema::terminal::TerminalOutput;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -44,6 +45,76 @@ impl TerminalRegistry {
 
         terminals.insert(key, terminal.clone());
         Ok(terminal)
+    }
+
+    /// List all active terminals for a connection with their current states
+    pub async fn list_all_terminals(
+        &self,
+        connection_id: &str,
+    ) -> Result<TerminalOutput, anyhow::Error> {
+        let start = std::time::Instant::now();
+        let terminals = self.terminals.lock().await;
+
+        let mut snapshots = Vec::new();
+        for ((conn_id, term_id), terminal) in terminals.iter() {
+            if conn_id == connection_id {
+                // Get current state without blocking
+                let state = terminal.read_current_state(*term_id).await?;
+                snapshots.push(serde_json::json!({
+                    "terminal": term_id,
+                    "output": state.output,
+                    "cwd": state.cwd,
+                    "exit_code": state.exit_code,
+                    "completed": state.completed,
+                }));
+            }
+        }
+
+        // Sort by terminal ID
+        snapshots.sort_by_key(|v| v["terminal"].as_u64().unwrap_or(0));
+
+        Ok(TerminalOutput {
+            terminal: None, // None indicates LIST response with multiple terminals
+            output: serde_json::to_string_pretty(&snapshots)?,
+            exit_code: Some(0),
+            cwd: "/".to_string(),
+            duration_ms: start.elapsed().as_millis() as u64,
+            completed: true,
+        })
+    }
+
+    /// Kill a terminal and cleanup all resources
+    pub async fn kill_terminal(
+        &self,
+        connection_id: &str,
+        terminal_id: u32,
+    ) -> Result<TerminalOutput, anyhow::Error> {
+        let start = std::time::Instant::now();
+        let key = (connection_id.to_string(), terminal_id);
+        let mut terminals = self.terminals.lock().await;
+
+        if let Some(terminal) = terminals.remove(&key) {
+            // Terminal::drop() handles graceful shutdown of all components
+            drop(terminal);
+
+            Ok(TerminalOutput {
+                terminal: Some(terminal_id),
+                output: format!(
+                    "Terminal {} gracefully shutdown and all resources cleaned up",
+                    terminal_id
+                ),
+                exit_code: Some(0),
+                cwd: "/".to_string(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                completed: true,
+            })
+        } else {
+            Err(anyhow::anyhow!(
+                "Terminal {} not found for connection {}",
+                terminal_id,
+                connection_id
+            ))
+        }
     }
 }
 

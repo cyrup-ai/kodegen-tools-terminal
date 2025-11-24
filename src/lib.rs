@@ -2,9 +2,11 @@ pub mod pty;
 pub mod shell;
 pub mod registry;
 pub mod tool;
+pub mod validation;
 
 pub use registry::TerminalRegistry;
 pub use tool::TerminalTool;
+pub use validation::CommandManager;
 
 // Export three-thread architecture types
 pub use pty::terminal::{Terminal, TerminalBuffer, ExecuteCommand, ShellOutput};

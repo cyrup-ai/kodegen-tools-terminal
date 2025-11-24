@@ -2,7 +2,7 @@ use brush_core::Shell as BrushCoreShell;
 use brush_core::builtins::builtin;
 use std::io;
 
-use super::builtins::SedCommand;
+use super::builtins::{SedCommand, LsCommand, LsdCommand};
 
 #[derive(Clone)]
 pub struct BrushShell {
@@ -16,6 +16,10 @@ impl BrushShell {
 
         // Override sed to redirect to kodegen filesystem tools
         builtins.insert("sed".to_string(), builtin::<SedCommand>());
+
+        // Override ls and lsd with kgls (blazing-fast ls/lsd replacement)
+        builtins.insert("ls".to_string(), builtin::<LsCommand>());
+        builtins.insert("lsd".to_string(), builtin::<LsdCommand>());
 
         let shell = BrushCoreShell::builder()
             .interactive(true)
@@ -45,6 +49,10 @@ impl BrushShell {
 
         // Override sed to redirect to kodegen filesystem tools
         builtins.insert("sed".to_string(), builtin::<SedCommand>());
+
+        // Override ls and lsd with kgls (blazing-fast ls/lsd replacement)
+        builtins.insert("ls".to_string(), builtin::<LsCommand>());
+        builtins.insert("lsd".to_string(), builtin::<LsdCommand>());
 
         let shell = BrushCoreShell::builder()
             .interactive(true)

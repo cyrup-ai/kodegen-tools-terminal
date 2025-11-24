@@ -143,6 +143,7 @@ impl TerminalBuilder {
             brush_handle: Some(brush_handle),
             vte_handle: Some(vte_handle),
             buffer_rx: tokio::sync::Mutex::new(buffer_rx),
+            command_manager: crate::validation::CommandManager::with_defaults(),
         })
     }
 }

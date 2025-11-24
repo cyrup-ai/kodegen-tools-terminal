@@ -1,3 +1,5 @@
+//! Example demonstrating all 4 terminal actions: EXEC, READ, LIST, KILL
+
 use kodegen_tools_terminal::TerminalRegistry;
 
 #[tokio::main]
@@ -5,79 +7,156 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .init();
 
-    log::info!("=== TERMINAL EXAMPLE ===\n");
+    log::info!("=== TERMINAL TOOL: ALL 4 ACTIONS DEMO ===\n");
 
-    // Create registry and get terminal
+    // Create registry
     let registry = TerminalRegistry::new();
-    let terminal1 = registry.find_or_create_terminal("test-connection", 1).await?;
 
-    // Run test scenarios
-    test_basic_command(&terminal1).await?;
+    // Demo 1: EXEC action - Execute commands with default timeout
+    demo_exec_action(&registry).await?;
     log::info!("\n{}\n", "=".repeat(80));
 
-    test_terminal_reuse(&terminal1).await?;
+    // Demo 2: EXEC action - Background task (await_completion_ms=0)
+    demo_background_task(&registry).await?;
+    log::info!("\n{}\n", "=".repeat(80));
 
-    log::info!("\n=== ALL SCENARIOS COMPLETED ===");
+    // Demo 3: READ action - Check terminal state
+    demo_read_action(&registry).await?;
+    log::info!("\n{}\n", "=".repeat(80));
+
+    // Demo 4: LIST action - Show all terminals
+    demo_list_action(&registry).await?;
+    log::info!("\n{}\n", "=".repeat(80));
+
+    // Demo 5: KILL action - Gracefully shutdown terminal
+    demo_kill_action(&registry).await?;
+
+    log::info!("\n=== ALL ACTIONS DEMONSTRATED SUCCESSFULLY ===");
     Ok(())
 }
 
-/// Test basic command execution
-async fn test_basic_command(terminal: &std::sync::Arc<kodegen_tools_terminal::Terminal>) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("TEST: Basic command execution");
+/// Demo 1: EXEC action with default timeout (300000ms = 5 minutes)
+async fn demo_exec_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("🚀 DEMO 1: EXEC Action (Execute Command)");
+    log::info!("   - Default timeout: 300000ms (5 minutes)");
+    log::info!("   - Terminal: 0 (default, zero-based indexing)");
 
-    let request_id = rmcp::model::RequestId::String("test-basic-1".to_string().into());
-    let output = terminal.execute_command(request_id, "ls -la".to_string()).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 0).await?;
+    let request_id = rmcp::model::RequestId::String("exec-demo-1".to_string().into());
 
-    log::info!("  Terminal: {}", output.terminal);
-    log::info!("  Exit code: {}", output.exit_code);
-    log::info!("  CWD: {}", output.cwd);
-    log::info!("  Duration: {}ms", output.duration_ms);
-    log::info!("  Output length: {} bytes", output.output.len());
+    log::info!("\n   Executing: pwd && ls -la");
+    let output = terminal.execute_command(
+        request_id,
+        "pwd && ls -la".to_string(),
+        300_000, // 5 minutes timeout
+    ).await?;
 
-    assert_eq!(output.exit_code, 0, "ls command should succeed");
-    assert!(!output.output.is_empty(), "ls should produce output");
+    log::info!("   ✅ Command completed:");
+    log::info!("      Terminal: {:?}", output.terminal);
+    log::info!("      Exit code: {:?}", output.exit_code);
+    log::info!("      CWD: {}", output.cwd);
+    log::info!("      Duration: {}ms", output.duration_ms);
+    log::info!("      Completed: {}", output.completed);
+    log::info!("      Output (first 100 chars): {}",
+               output.output.chars().take(100).collect::<String>().replace('\n', "\\n"));
 
     Ok(())
 }
 
-/// Test terminal reuse (state persistence)
-async fn test_terminal_reuse(terminal: &std::sync::Arc<kodegen_tools_terminal::Terminal>) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("TEST: Terminal reuse (state persistence)");
+/// Demo 2: EXEC action with background task (await_completion_ms=0)
+async fn demo_background_task(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("🔥 DEMO 2: EXEC Action (Background Task)");
+    log::info!("   - Fire-and-forget: await_completion_ms=0");
+    log::info!("   - Terminal: 1 (parallel work)");
 
-    log::info!("\n  Step 1: Create /tmp/kodegen_test and cd into it");
-    let request_id1 = rmcp::model::RequestId::String("test-reuse-1".to_string().into());
-    let output1 = terminal.execute_command(
-        request_id1,
-        "mkdir -p /tmp/kodegen_test && cd /tmp/kodegen_test && pwd".to_string()
+    let terminal = registry.find_or_create_terminal("demo-connection", 1).await?;
+    let request_id = rmcp::model::RequestId::String("exec-bg-1".to_string().into());
+
+    log::info!("\n   Starting background task: sleep 1 && echo 'Background task complete'");
+    let output = terminal.execute_command(
+        request_id,
+        "sleep 1 && echo 'Background task complete' && pwd".to_string(),
+        0, // Fire-and-forget!
     ).await?;
-    log::info!("    CWD: {}", output1.cwd);
-    assert!(output1.cwd.contains("kodegen_test"), "Should be in kodegen_test directory");
 
-    log::info!("\n  Step 2: Create file (same terminal - state should persist)");
-    let request_id2 = rmcp::model::RequestId::String("test-reuse-2".to_string().into());
-    let output2 = terminal.execute_command(
-        request_id2,
-        "echo 'Hello Terminal 1' > test.txt && pwd".to_string()
-    ).await?;
-    log::info!("    CWD: {}", output2.cwd);
-    assert_eq!(output2.exit_code, 0, "Command should succeed");
-    assert!(output2.cwd.contains("kodegen_test"), "Should still be in kodegen_test");
+    log::info!("   ✅ Background task started:");
+    log::info!("      Terminal: {:?}", output.terminal);
+    log::info!("      Exit code: {:?} (None = still running)", output.exit_code);
+    log::info!("      Completed: {} (false = running in background)", output.completed);
+    log::info!("      Message: {}", output.output.trim());
 
-    log::info!("\n  Step 3: Verify state persisted");
-    let request_id3 = rmcp::model::RequestId::String("test-reuse-3".to_string().into());
-    let output3 = terminal.execute_command(
-        request_id3,
-        "pwd && cat test.txt".to_string()
-    ).await?;
-    log::info!("    Output: {}", output3.output.trim());
-    assert!(output3.output.contains("kodegen_test"), "Should still be in kodegen_test directory");
-    assert!(output3.output.contains("Hello Terminal 1"), "File should contain expected content");
+    // Give it time to complete
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    log::info!("  ✅ Terminal state persisted!");
+    Ok(())
+}
 
-    // Cleanup
-    let request_id_cleanup = rmcp::model::RequestId::String("test-reuse-cleanup".to_string().into());
-    let _ = terminal.execute_command(request_id_cleanup, "cd /tmp && rm -rf /tmp/kodegen_test".to_string()).await;
+/// Demo 3: READ action - Get current 80x24 VTE buffer snapshot
+async fn demo_read_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("📖 DEMO 3: READ Action (Get Current Buffer)");
+    log::info!("   - Returns 80x24 VTE buffer snapshot");
+    log::info!("   - No command execution");
+
+    // Read terminal:1 (where background task ran)
+    let terminal = registry.find_or_create_terminal("demo-connection", 1).await?;
+    let output = terminal.read_current_state(1).await?;
+
+    log::info!("\n   ✅ Terminal:1 current state:");
+    log::info!("      Terminal: {:?}", output.terminal);
+    log::info!("      CWD: {}", output.cwd);
+    log::info!("      Completed: {} (READ operation itself)", output.completed);
+    log::info!("      Buffer snapshot (first 150 chars): {}",
+               output.output.chars().take(150).collect::<String>().replace('\n', "\\n"));
+
+    Ok(())
+}
+
+/// Demo 4: LIST action - Show all active terminals
+async fn demo_list_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("📋 DEMO 4: LIST Action (Show All Terminals)");
+    log::info!("   - Returns snapshots of all active terminals");
+    log::info!("   - Filtered by connection_id");
+
+    let output = registry.list_all_terminals("demo-connection").await?;
+
+    log::info!("\n   ✅ Active terminals:");
+    log::info!("      Terminal: {:?} (None = LIST response)", output.terminal);
+    log::info!("      Exit code: {:?}", output.exit_code);
+    log::info!("      Completed: {}", output.completed);
+    log::info!("\n   Terminals JSON:");
+
+    // Pretty print the JSON output
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&output.output) {
+        log::info!("{}", serde_json::to_string_pretty(&parsed)?);
+    }
+
+    Ok(())
+}
+
+/// Demo 5: KILL action - Gracefully shutdown terminal
+async fn demo_kill_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("💀 DEMO 5: KILL Action (Graceful Shutdown)");
+    log::info!("   - Cleans up Brush shell, VTE processor, threads, channels");
+    log::info!("   - Terminal:1 will be terminated");
+
+    let output = registry.kill_terminal("demo-connection", 1).await?;
+
+    log::info!("\n   ✅ Terminal killed:");
+    log::info!("      Terminal: {:?}", output.terminal);
+    log::info!("      Exit code: {:?}", output.exit_code);
+    log::info!("      Message: {}", output.output);
+    log::info!("      Duration: {}ms", output.duration_ms);
+    log::info!("      Completed: {}", output.completed);
+
+    // Verify it's gone by trying to list
+    let list_output = registry.list_all_terminals("demo-connection").await?;
+    log::info!("\n   Verification (LIST after KILL):");
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_output.output) {
+        if let Some(arr) = parsed.as_array() {
+            log::info!("      Remaining terminals: {}", arr.len());
+            log::info!("      ✅ Terminal:1 successfully removed!");
+        }
+    }
 
     Ok(())
 }

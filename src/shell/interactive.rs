@@ -2,6 +2,7 @@
 
 use crate::pty::terminal::{ExecuteCommand, ShellOutput};
 use crate::shell::BrushShell;
+use brush_core::variables::ShellVariable;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -180,6 +181,17 @@ impl BrushInteractiveThread {
 
         // Get current working directory after command execution
         let current_cwd = self.shell.shell().working_dir().to_path_buf();
+
+        // Generate beautiful prompt for next command using actual exit code
+        let prompt = prmt::execute(
+            "{path:#89dceb} {git:#f9e2af} {ok:#a6e3a1}{fail:#f38ba8} ",
+            false,                      // no_version=false: enable rust/node/python version detection
+            Some(exit_code as i32),     // Use actual exit code from command we just executed
+            false,                      // no_color=false: enable colors (prmt handles NO_COLOR env + terminal detection)
+        ).unwrap_or("$ ".to_string());
+
+        // Update PS1 for next prompt display
+        let _ = self.shell.shell_mut().env.set_global("PS1", ShellVariable::new(&prompt));
 
         log::debug!("Sending completion event, exit_code={}", exit_code);
 

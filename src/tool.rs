@@ -1,7 +1,7 @@
 //! Terminal tool implementation
 
 use crate::TerminalRegistry;
-use kodegen_mcp_schema::terminal::{TERMINAL, TerminalInput};
+use kodegen_mcp_schema::terminal::{TERMINAL, TerminalAction, TerminalInput};
 use kodegen_mcp_tool::error::McpError;
 use kodegen_mcp_tool::{Tool, ToolExecutionContext};
 use rmcp::model::Content;
@@ -40,10 +40,12 @@ impl Tool for TerminalTool {
     }
 
     fn description() -> &'static str {
-        "Execute shell commands in persistent, stateful terminal sessions. \
-         Terminals maintain environment variables, working directory, and shell \
-         state across commands. Use different terminal numbers (1, 2, 3...) for \
-         parallel work. Streams output in real-time as the command executes."
+        "Execute shell commands in persistent, stateful terminal sessions with multiplatform support. \
+         Supports 4 actions: EXEC (execute command), READ (get current buffer), LIST (show all terminals), \
+         KILL (gracefully shutdown). Terminals maintain environment variables, working directory, and shell \
+         state across commands. Use different terminal numbers (0, 1, 2...) for parallel work. \
+         Returns 80x24 VTE buffer snapshots - actual rendered terminal output, not raw bytes. \
+         Supports background tasks (await_completion_ms=0) and timeout with continuation."
     }
 
     fn read_only() -> bool {
@@ -78,18 +80,52 @@ impl Tool for TerminalTool {
         let connection_id = ctx.connection_id().unwrap_or("default");
         let request_id = ctx.request_id().clone();
 
-        // Get or create terminal from registry
-        let terminal = self
-            .registry
-            .find_or_create_terminal(connection_id, args.terminal)
-            .await
-            .map_err(McpError::Other)?;
-
-        // Execute command on terminal
-        let output = terminal
-            .execute_command(request_id, args.command)
-            .await
-            .map_err(McpError::Other)?;
+        // Dispatch based on action
+        let output = match args.action {
+            TerminalAction::List => {
+                // List all active terminals with their current states
+                self.registry
+                    .list_all_terminals(connection_id)
+                    .await
+                    .map_err(McpError::Other)?
+            }
+            TerminalAction::Kill => {
+                // Gracefully shutdown terminal and cleanup all resources
+                self.registry
+                    .kill_terminal(connection_id, args.terminal)
+                    .await
+                    .map_err(McpError::Other)?
+            }
+            TerminalAction::Read => {
+                // Get current 80x24 VTE buffer snapshot without executing
+                let terminal = self
+                    .registry
+                    .find_or_create_terminal(connection_id, args.terminal)
+                    .await
+                    .map_err(McpError::Other)?;
+                terminal
+                    .read_current_state(args.terminal)
+                    .await
+                    .map_err(McpError::Other)?
+            }
+            TerminalAction::Exec => {
+                // Execute command (default action for backward compatibility)
+                let command = args.command.ok_or_else(|| {
+                    McpError::Other(anyhow::anyhow!(
+                        "command field is required for EXEC action"
+                    ))
+                })?;
+                let terminal = self
+                    .registry
+                    .find_or_create_terminal(connection_id, args.terminal)
+                    .await
+                    .map_err(McpError::Other)?;
+                terminal
+                    .execute_command(request_id, command, args.await_completion_ms)
+                    .await
+                    .map_err(McpError::Other)?
+            }
+        };
 
         Ok(vec![Content::text(serde_json::to_string(&output)?)])
     }

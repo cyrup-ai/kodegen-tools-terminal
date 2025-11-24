@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -28,10 +28,11 @@ macos = "public.app-category.developer-tools"
 
 
 [dependencies]
-kodegen_mcp_schema = { version = "0.3", path = "../kodegen-mcp-schema" }
-kodegen_mcp_tool = { version = "0.3", path = "../kodegen-mcp-tool" }
-kodegen_config_manager = { version = "0.3", path = "../kodegen-config-manager" }
-kodegen_server_http = { version = "0.3", path = "../kodegen-server-http" }
+kodegen_mcp_schema = { version = "0.3" }
+kodegen_mcp_tool = { version = "0.3" }
+kodegen_config_manager = { version = "0.3" }
+kodegen_server_http = { version = "0.3" }
+kgls = { version = "0.1" }
 
 # MCP SDK - for Tool implementation
 rmcp = { version = "0.9", features = ["client", "schemars", "server"] }
@@ -64,6 +65,9 @@ vte = "0.15"                # MUST match alacritty_terminal's vte version exactl
 brush-core = "0.4"
 brush-builtins = "0.1"
 clap = { version = "4", features = ["derive"] }
+
+# Prompt generator - for beautiful terminal prompts with git status
+prmt = "0.1"
 
 # PTY I/O
 bytes = "1"
