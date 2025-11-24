@@ -1,13 +1,16 @@
-pub mod manager;
 pub mod pty;
+pub mod shell;
+pub mod registry;
+pub mod tool;
 
-pub mod terminal;
+pub use registry::TerminalRegistry;
+pub use tool::TerminalTool;
 
-pub use terminal::TerminalTool;
-pub use manager::{
-    ActiveTerminalSession, CommandManager, CompletedTerminalSession, TerminalCommandResult,
-    TerminalManager, TerminalOutputResponse,
-};
+// Export three-thread architecture types
+pub use pty::terminal::{Terminal, TerminalBuffer, ExecuteCommand, ShellOutput};
+
+// Re-export TerminalOutput for examples and tests
+pub use kodegen_mcp_schema::terminal::TerminalOutput;
 
 /// Start the HTTP server programmatically for embedded mode
 ///
@@ -28,7 +31,6 @@ pub async fn start_server(
 ) -> anyhow::Result<kodegen_server_http::ServerHandle> {
     use kodegen_server_http::{Managers, RouterSet, create_http_server, register_tool};
     use rmcp::handler::server::router::{prompt::PromptRouter, tool::ToolRouter};
-    use std::sync::Arc;
     use std::time::Duration;
 
     let tls_config = match (tls_cert, tls_key) {
@@ -52,18 +54,12 @@ pub async fn start_server(
                 let prompt_router = PromptRouter::new();
                 let managers = Managers::new();
 
-                // Create managers for terminal tools
-                let terminal_manager = Arc::new(crate::TerminalManager::new());
-
-                // Register unified terminal tool
+                // Register terminal tool
                 let (tool_router, prompt_router) = register_tool(
                     tool_router,
                     prompt_router,
-                    crate::TerminalTool::new(terminal_manager.clone()),
+                    crate::TerminalTool::new(),
                 );
-
-                // Start cleanup task
-                terminal_manager.start_cleanup_task();
 
                 Ok(RouterSet::new(tool_router, prompt_router, managers))
             })

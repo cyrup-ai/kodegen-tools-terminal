@@ -1,193 +1,105 @@
-use std::{
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
-    collections::HashMap,
-    thread,
-};
+use std::collections::HashMap;
 
 use tokio::sync::broadcast;
-
-// Alacritty imports
-use alacritty_terminal::term::Term as AlacrittyTerm;
-use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Line, Column};
-
-// Import FairMutex for terminal state
-use super::sync::FairMutex;
-
-/// No-op event listener for headless terminal usage
-///
-/// Alacritty's Term sends events for GUI updates (title changes, cursor blinks, etc.).
-/// Since we're using it headlessly, we ignore all events.
-#[derive(Clone, Copy, Debug)]
-pub struct HeadlessEventProxy;
-
-impl EventListener for HeadlessEventProxy {
-    fn send_event(&self, _event: TermEvent) {
-        // Intentionally empty: we don't need GUI event notifications
-        // in a headless terminal server context
-    }
-}
 
 /// Represents a virtual terminal component
-/// Terminal emulator using Alacritty's Term + VTE processor with event loop architecture
+/// Terminal emulator using three-thread architecture:
+/// - BrushExecutor: Executes commands, emits ShellOutput events
+/// - VteProcessor: Processes VTE sequences, maintains terminal grid, emits TerminalBuffer events
+/// - TerminalManager: API layer (subscribes to TerminalBuffer events)
 pub struct Terminal {
-    /// Alacritty's terminal emulator (handles grid, cursor, modes, etc.)
-    /// Uses FairMutex for blocking access from event loop thread
-    /// Exposed as pub(crate) for manager module grid access
-    pub(crate) term: Arc<FairMutex<AlacrittyTerm<HeadlessEventProxy>>>,
+    /// Terminal ID for this instance
+    pub(super) terminal_id: u32,
 
-    /// Channel sender for writing input to PTY with poller wakeup
-    pub(super) sender: Option<super::event_loop::InputSender>,
+    /// Handle to BrushExecutor thread (drop = shutdown)
+    pub(super) brush_handle: Option<crate::shell::ShellHandle>,
 
-    /// Terminal size
-    pub(super) size: TermSize,
+    /// Handle to VteProcessor thread (drop = shutdown)
+    pub(super) vte_handle: Option<super::vte_processor::VteHandle>,
 
-    /// PTY closed flag (set when event loop detects EOF)
-    pub(super) pty_closed: Arc<AtomicBool>,
-
-    /// Terminal configuration
-    pub(super) config: TerminalConfig,
-
-    /// Single event loop thread (replaces reader + writer + processor tasks)
-    /// The event loop takes ownership of the PTY and moves it into the thread
-    pub(super) event_loop_thread: Option<thread::JoinHandle<()>>,
-
-    /// Child process ID (captured before moving PTY into event loop)
-    /// PID is immutable after process creation, so we capture it once
-    pub(super) child_pid: Option<u32>,
-
-    /// Broadcast channel for screen update notifications
-    /// Subscribers get notified when screen changes, then call screen() for actual data
-    pub(super) output_broadcast: Arc<broadcast::Sender<()>>,
-
-    /// Broadcast channel for bell (BEL/\x07) notifications
-    /// Subscribers get notified when terminal receives bell character (command completion marker)
-    pub(super) bell_broadcast: Arc<broadcast::Sender<()>>,
+    /// Pre-subscribed receiver for TerminalBuffer events (subscribed in builder)
+    /// Kept alive to prevent broadcast channel from dropping events before subscribers exist
+    #[allow(dead_code)]
+    pub(super) buffer_rx: tokio::sync::Mutex<broadcast::Receiver<super::TerminalBuffer>>,
 }
 
-impl Clone for Terminal {
-    fn clone(&self) -> Self {
-        Self {
-            term: self.term.clone(),
-            sender: self.sender.clone(),
-            size: self.size,
-            pty_closed: self.pty_closed.clone(),
-            config: self.config.clone(),
-            event_loop_thread: None,  // Thread handle not cloneable; PTY owned by original instance
-            child_pid: self.child_pid,  // u32 is Copy
-            output_broadcast: self.output_broadcast.clone(),
-            bell_broadcast: self.bell_broadcast.clone(),
-        }
-    }
-}
 
 impl Terminal {
-    /// Check if the PTY has been detected as closed by the output reader task
+    /// Create a new terminal builder
     #[must_use]
-    pub fn is_pty_closed(&self) -> bool {
-        self.pty_closed.load(Ordering::SeqCst)
+    pub fn builder() -> super::TerminalBuilder {
+        super::TerminalBuilder::new()
     }
 
-    /// Get rendered screen contents as a string
+
+    /// Subscribe to terminal buffer updates
     ///
-    /// Renders the current terminal grid to a plain text string.
+    /// Creates a new subscription to the TerminalBuffer broadcast channel.
+    /// The Terminal holds an initial subscription (created in builder) to prevent event loss.
     #[must_use]
-    pub async fn screen(&self) -> Option<String> {
-        let term = self.term.clone();
-        tokio::task::spawn_blocking(move || {
-            let term_guard = term.lock_unfair();
-            let grid = term_guard.grid();
+    pub fn subscribe_buffer(&self) -> Option<broadcast::Receiver<super::TerminalBuffer>> {
+        self.vte_handle.as_ref().map(|h| h.buffer_tx.subscribe())
+    }
 
-            // Pre-allocate: rows * cols + newlines
-            let capacity = grid.screen_lines() * (grid.columns() + 1);
-            let mut output = String::with_capacity(capacity);
+    /// Execute a command and return output (high-level API)
+    ///
+    /// Executes command in the persistent shell, collects output filtered by request_id,
+    /// and returns TerminalOutput when command completes.
+    pub async fn execute_command(
+        &self,
+        request_id: rmcp::model::RequestId,
+        command: String,
+    ) -> Result<kodegen_mcp_schema::terminal::TerminalOutput, anyhow::Error> {
+        use super::TerminalBuffer;
+        let start = std::time::Instant::now();
 
-            for line_idx in 0..grid.screen_lines() {
-                let line = &grid[Line(line_idx as i32)];
+        // Subscribe to buffer events (creates new receiver from broadcast sender)
+        let mut buffer_rx = self.subscribe_buffer()
+            .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
 
-                for col_idx in 0..grid.columns() {
-                    let cell = &line[Column(col_idx)];
-                    output.push(cell.c);
+        let brush_handle = self.brush_handle.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
+
+        // Send command to BrushExecutor
+        brush_handle.command_tx.send(super::ExecuteCommand::Run {
+            request_id: request_id.clone(),
+            command,
+        }).await?;
+
+        // Wait for final buffer event with matching request_id
+        let mut final_output = String::new();
+        let mut final_cwd = std::path::PathBuf::from("/");
+        let mut final_exit_code;
+
+        loop {
+            match buffer_rx.recv().await {
+                Ok(TerminalBuffer::Updated { request_id: event_req_id, lines, cwd, exit_code, is_final, .. }) => {
+                    // Filter: only process events matching our request_id
+                    if event_req_id == request_id {
+                        final_output = lines.join("\n");
+                        final_cwd = cwd;
+                        final_exit_code = exit_code;
+                        if is_final {
+                            break;
+                        }
+                    }
                 }
-
-                // Add newline except for last line
-                if line_idx < grid.screen_lines() - 1 {
-                    output.push('\n');
-                }
+                Ok(_) => continue, // Ignore TitleChanged
+                Err(_) => return Err(anyhow::anyhow!("Buffer channel closed")),
             }
+        }
 
-            Some(output)
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        // Build output response
+        Ok(kodegen_mcp_schema::terminal::TerminalOutput {
+            terminal: self.terminal_id,
+            output: final_output,
+            exit_code: final_exit_code,
+            cwd: final_cwd.display().to_string(),
+            duration_ms,
         })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    /// Get cell at specific position (useful for debugging/testing)
-    #[must_use]
-    pub async fn cell_at(&self, row: usize, col: usize) -> Option<char> {
-        let term = self.term.clone();
-        tokio::task::spawn_blocking(move || {
-            let term_guard = term.lock_unfair();
-            let grid = term_guard.grid();
-
-            if row >= grid.screen_lines() || col >= grid.columns() {
-                return None;
-            }
-
-            let cell = &grid[Line(row as i32)][Column(col)];
-            Some(cell.c)
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    /// Get cursor position (row, col)
-    #[must_use]
-    pub async fn cursor_position(&self) -> (usize, usize) {
-        let term = self.term.clone();
-        tokio::task::spawn_blocking(move || {
-            let term_guard = term.lock_unfair();
-            let cursor = term_guard.grid().cursor.point;
-            (cursor.line.0 as usize, cursor.column.0)
-        })
-        .await
-        .unwrap_or((0, 0))
-    }
-
-    /// Check if alternate screen is active
-    #[must_use]
-    pub async fn is_alt_screen(&self) -> bool {
-        let term = self.term.clone();
-        tokio::task::spawn_blocking(move || {
-            let term_guard = term.lock_unfair();
-            term_guard.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
-        })
-        .await
-        .unwrap_or(false)
-    }
-
-    /// Subscribe to real-time output stream
-    ///
-    /// Returns a broadcast receiver that receives new output lines as they're processed.
-    /// Multiple subscribers can listen concurrently.
-    ///
-    /// Subscribers receive notifications when screen updates, then call screen() to get actual data.
-    /// This follows Alacritty's pattern of lightweight notifications instead of broadcasting data.
-    #[must_use]
-    pub fn subscribe_output(&self) -> broadcast::Receiver<()> {
-        self.output_broadcast.subscribe()
-    }
-
-    /// Subscribe to bell (BEL/\x07) events
-    ///
-    /// Returns a broadcast receiver that receives notifications when terminal receives BEL character.
-    /// Used for command completion detection when commands are wrapped with `;printf '\x07'`.
-    #[must_use]
-    pub fn subscribe_bell(&self) -> broadcast::Receiver<()> {
-        self.bell_broadcast.subscribe()
     }
 }
 

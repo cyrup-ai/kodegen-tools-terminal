@@ -60,6 +60,11 @@ anyhow = "1"
 alacritty_terminal = "0.25"
 vte = "0.15"                # MUST match alacritty_terminal's vte version exactly
 
+# Brush shell - for in-process POSIX/bash shell execution
+brush-core = "0.4"
+brush-builtins = "0.1"
+clap = { version = "4", features = ["derive"] }
+
 # PTY I/O
 bytes = "1"
 parking_lot = "0.12.5"

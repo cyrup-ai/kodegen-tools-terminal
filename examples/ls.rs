@@ -1,169 +1,83 @@
-use kodegen_tools_terminal::TerminalManager;
-use std::sync::Arc;
-use std::time::Instant;
-
-const CONNECTION_ID: &str = "example-session";
+use kodegen_tools_terminal::TerminalRegistry;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .init();
 
-    log::info!("=== TERMINAL MANAGER EXAMPLE ===\n");
+    log::info!("=== TERMINAL EXAMPLE ===\n");
 
-    // Create terminal manager
-    let terminal_manager = Arc::new(TerminalManager::new());
+    // Create registry and get terminal
+    let registry = TerminalRegistry::new();
+    let terminal1 = registry.find_or_create_terminal("test-connection", 1).await?;
 
-    // Run all scenarios
-    test_terminal_reuse(&terminal_manager).await?;
+    // Run test scenarios
+    test_basic_command(&terminal1).await?;
     log::info!("\n{}\n", "=".repeat(80));
 
-    test_parallel_terminals(&terminal_manager).await?;
-    log::info!("\n{}\n", "=".repeat(80));
-
-    test_error_handling(&terminal_manager).await?;
+    test_terminal_reuse(&terminal1).await?;
 
     log::info!("\n=== ALL SCENARIOS COMPLETED ===");
     Ok(())
 }
 
-/// Helper: execute command with bell-based completion detection
-async fn execute_command(
-    manager: &TerminalManager,
-    connection_id: &str,
-    terminal_id: u32,
-    command: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Use TerminalManager's execute_command_with_completion (with bell detection)
-    manager.execute_command_with_completion(
-        connection_id,
-        terminal_id,
-        command,
-        std::time::Duration::from_secs(30),  // 30 second timeout for tests
-        || false,  // No cancellation
-        |_output| async {
-            // No-op streaming callback for examples
-        },
-    ).await?;
+/// Test basic command execution
+async fn test_basic_command(terminal: &std::sync::Arc<kodegen_tools_terminal::Terminal>) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("TEST: Basic command execution");
+
+    let request_id = rmcp::model::RequestId::String("test-basic-1".to_string().into());
+    let output = terminal.execute_command(request_id, "ls -la".to_string()).await?;
+
+    log::info!("  Terminal: {}", output.terminal);
+    log::info!("  Exit code: {}", output.exit_code);
+    log::info!("  CWD: {}", output.cwd);
+    log::info!("  Duration: {}ms", output.duration_ms);
+    log::info!("  Output length: {} bytes", output.output.len());
+
+    assert_eq!(output.exit_code, 0, "ls command should succeed");
+    assert!(!output.output.is_empty(), "ls should produce output");
 
     Ok(())
 }
 
-async fn test_terminal_reuse(
-    manager: &Arc<TerminalManager>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("SCENARIO 1: Terminal Reuse (State Persistence)");
-    log::info!("{}", "=".repeat(80));
+/// Test terminal reuse (state persistence)
+async fn test_terminal_reuse(terminal: &std::sync::Arc<kodegen_tools_terminal::Terminal>) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("TEST: Terminal reuse (state persistence)");
 
-    log::info!("\nStep 1: Create /tmp/kodegen_test and cd into it");
-    execute_command(
-        manager,
-        CONNECTION_ID,
-        1,
-        "mkdir -p /tmp/kodegen_test && cd /tmp/kodegen_test && pwd",
+    log::info!("\n  Step 1: Create /tmp/kodegen_test and cd into it");
+    let request_id1 = rmcp::model::RequestId::String("test-reuse-1".to_string().into());
+    let output1 = terminal.execute_command(
+        request_id1,
+        "mkdir -p /tmp/kodegen_test && cd /tmp/kodegen_test && pwd".to_string()
     ).await?;
+    log::info!("    CWD: {}", output1.cwd);
+    assert!(output1.cwd.contains("kodegen_test"), "Should be in kodegen_test directory");
 
-    let output1 = manager.get_output(CONNECTION_ID, 1, 0, usize::MAX).await
-        .ok_or("Terminal 1 not found")?;
-    log::info!("  Output: {}", output1.lines.join("\n").trim());
+    log::info!("\n  Step 2: Create file (same terminal - state should persist)");
+    let request_id2 = rmcp::model::RequestId::String("test-reuse-2".to_string().into());
+    let output2 = terminal.execute_command(
+        request_id2,
+        "echo 'Hello Terminal 1' > test.txt && pwd".to_string()
+    ).await?;
+    log::info!("    CWD: {}", output2.cwd);
+    assert_eq!(output2.exit_code, 0, "Command should succeed");
+    assert!(output2.cwd.contains("kodegen_test"), "Should still be in kodegen_test");
 
-    log::info!("\nStep 2: Create file (same terminal - reuse)");
-    manager.send_input(CONNECTION_ID, 1, "echo 'Hello Terminal 1' > test.txt\n", false).await?;
-
-    let output2 = manager.get_output(CONNECTION_ID, 1, 0, usize::MAX).await
-        .ok_or("Terminal 1 not found")?;
-    assert_eq!(output2.exit_code, Some(0), "Command should succeed");
-
-    log::info!("\nStep 3: Verify state persisted");
-    manager.send_input(CONNECTION_ID, 1, "pwd && cat test.txt\n", false).await?;
-
-    let output3 = manager.get_output(CONNECTION_ID, 1, 0, usize::MAX).await
-        .ok_or("Terminal 1 not found")?;
-
-    let output_text = output3.lines.join("\n");
-    log::info!("  Output:\n{}", output_text);
-    assert!(output_text.contains("kodegen_test"), "Should still be in kodegen_test directory");
-    assert!(output_text.contains("Hello Terminal 1"), "File should contain expected content");
-
-    let cwd = manager.get_terminal_cwd(CONNECTION_ID, 1).await
-        .ok_or("Could not get CWD")?;
-    assert!(cwd.to_string_lossy().contains("kodegen_test"), "CWD should be in kodegen_test");
+    log::info!("\n  Step 3: Verify state persisted");
+    let request_id3 = rmcp::model::RequestId::String("test-reuse-3".to_string().into());
+    let output3 = terminal.execute_command(
+        request_id3,
+        "pwd && cat test.txt".to_string()
+    ).await?;
+    log::info!("    Output: {}", output3.output.trim());
+    assert!(output3.output.contains("kodegen_test"), "Should still be in kodegen_test directory");
+    assert!(output3.output.contains("Hello Terminal 1"), "File should contain expected content");
 
     log::info!("  ✅ Terminal state persisted!");
 
     // Cleanup
-    manager.send_input(CONNECTION_ID, 1, "cd /tmp && rm -rf /tmp/kodegen_test\n", false).await?;
-
-    Ok(())
-}
-
-async fn test_parallel_terminals(
-    manager: &Arc<TerminalManager>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("SCENARIO 2: Parallel Terminals");
-    log::info!("{}", "=".repeat(80));
-
-    let start = Instant::now();
-
-    log::info!("\nLaunching 3 terminals in parallel...");
-
-    // Spawn all terminals in parallel and wait for completion
-    let (r1, r2, r3) = tokio::join!(
-        execute_command(manager, CONNECTION_ID, 2, "sleep 2 && echo 'Task 1 complete'"),
-        execute_command(manager, CONNECTION_ID, 3, "echo 'Task 2 complete immediately'"),
-        execute_command(manager, CONNECTION_ID, 4, "sleep 1 && echo 'Task 3 complete'"),
-    );
-
-    r1?;
-    r2?;
-    r3?;
-
-    let elapsed = start.elapsed();
-    log::info!("\nCompleted in {:?}", elapsed);
-    log::info!("(Sequential: ~3s, Parallel: ~2s)");
-
-    let out1 = manager.get_output(CONNECTION_ID, 2, 0, usize::MAX).await
-        .ok_or("Terminal 2 not found")?;
-    let out2 = manager.get_output(CONNECTION_ID, 3, 0, usize::MAX).await
-        .ok_or("Terminal 3 not found")?;
-    let out3 = manager.get_output(CONNECTION_ID, 4, 0, usize::MAX).await
-        .ok_or("Terminal 4 not found")?;
-
-    log::info!("\nTerminal 2: {}", out1.lines.join("\n").trim());
-    log::info!("Terminal 3: {}", out2.lines.join("\n").trim());
-    log::info!("Terminal 4: {}", out3.lines.join("\n").trim());
-
-    assert!(elapsed.as_secs() <= 3, "Should run in parallel (~2s not ~3s)");
-    log::info!("✅ Commands ran in parallel!");
-
-    Ok(())
-}
-
-async fn test_error_handling(
-    manager: &Arc<TerminalManager>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("SCENARIO 3: Error Handling");
-    log::info!("{}", "=".repeat(80));
-
-    log::info!("\nStep 1: Run failing command");
-    execute_command(manager, CONNECTION_ID, 5, "cat /this/does/not/exist").await?;
-
-    let output1 = manager.get_output(CONNECTION_ID, 5, 0, usize::MAX).await
-        .ok_or("Terminal 5 not found")?;
-
-    log::info!("  Exit code: {:?}", output1.exit_code);
-    assert_ne!(output1.exit_code, Some(0), "Should return non-zero exit code");
-    log::info!("  ✅ Error properly reported");
-
-    log::info!("\nStep 2: Verify terminal still works after error");
-    manager.send_input(CONNECTION_ID, 5, "echo 'Recovered successfully'\n", false).await?;
-
-    let output2 = manager.get_output(CONNECTION_ID, 5, 0, usize::MAX).await
-        .ok_or("Terminal 5 not found")?;
-
-    let output_text = output2.lines.join("\n");
-    assert!(output_text.contains("Recovered"), "Output should contain success message");
-    log::info!("  ✅ Terminal recovered!");
+    let request_id_cleanup = rmcp::model::RequestId::String("test-reuse-cleanup".to_string().into());
+    let _ = terminal.execute_command(request_id_cleanup, "cd /tmp && rm -rf /tmp/kodegen_test".to_string()).await;
 
     Ok(())
 }

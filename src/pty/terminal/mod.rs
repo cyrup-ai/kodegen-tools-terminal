@@ -1,25 +1,24 @@
-// Core types and structures
-mod types;
-pub use types::{KeyCode, TermSize, Terminal, TerminalConfig, HeadlessEventProxy};
+//! Terminal module - Three-thread architecture
+//!
+//! # Architecture
+//!
+//! - **BrushExecutor**: Executes commands, emits ShellOutput events
+//! - **VteProcessor**: Processes VTE sequences, maintains terminal grid, emits TerminalBuffer events
+//! - **TerminalManager**: API layer (subscribes to TerminalBuffer events)
 
-// Synchronization primitives (FairMutex)
+mod types;
+pub use types::{KeyCode, TermSize, Terminal, TerminalConfig};
+
+mod events;
+pub use events::{ShellOutput, TerminalBuffer, ExecuteCommand};
+
 pub mod sync;
 
-// Event loop implementation (uses generic EventedPty trait from Alacritty)
-mod event_loop;
+mod event_bridge;
+pub(super) use event_bridge::EventBridge;
 
-// Builder pattern
+mod vte_processor;
+pub use vte_processor::{VteProcessorThread, VteHandle};
+
 mod builder;
 pub use builder::TerminalBuilder;
-
-// Factory methods
-mod factory;
-
-// Command execution and input operations
-mod execution;
-
-// Process management
-mod process;
-
-// Shell detection utilities
-mod shell;

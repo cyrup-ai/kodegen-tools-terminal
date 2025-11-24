@@ -8,7 +8,6 @@ pub use tokio;
 // Core terminal types
 pub use terminal::{
     KeyCode, TermSize, Terminal, TerminalBuilder,
-    HeadlessEventProxy,
 };
 
 // Alacritty re-exports (replace portable_pty::CommandBuilder)
