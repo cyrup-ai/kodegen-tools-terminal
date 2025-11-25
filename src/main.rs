@@ -8,10 +8,6 @@ use rmcp::handler::server::router::{prompt::PromptRouter, tool::ToolRouter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    ).init();
-
     run_http_server("terminal", |_config, _tracker| {
         Box::pin(async move {
             let tool_router = ToolRouter::new();
