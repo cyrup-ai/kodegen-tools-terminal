@@ -136,14 +136,23 @@ impl TerminalBuilder {
         // Subscribe to TerminalBuffer events BEFORE any events can be emitted
         let buffer_rx = vte_handle.buffer_tx.subscribe();
 
+        // NEW: Create ValidationEngine with default rules
+        let validation_engine = crate::validation::ValidationEngine::new();
+        crate::validation::register_default_rules(&validation_engine);
+
+        // CommandManager provides parsing utilities only (validation is done by ValidationEngine)
+        let command_manager = crate::validation::CommandManager::new();
+
         log::info!("Terminal initialized with THREE-THREAD architecture (BrushExecutor + VteProcessor + TerminalManager)");
+        log::info!("ValidationEngine initialized with default security rules");
 
         Ok(Terminal {
             terminal_id: self.terminal_id.unwrap_or(0),
             brush_handle: Some(brush_handle),
             vte_handle: Some(vte_handle),
             buffer_rx: tokio::sync::Mutex::new(buffer_rx),
-            command_manager: crate::validation::CommandManager::with_defaults(),
+            validation_engine,
+            command_manager,
         })
     }
 }

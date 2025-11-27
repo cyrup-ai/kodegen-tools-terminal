@@ -218,32 +218,158 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-## Command Security
+## Command Validation System
 
-The `CommandManager` provides security controls by blocking dangerous commands:
+The terminal includes a comprehensive **context-aware validation system** that blocks dangerous operations while allowing safe commands. Validation happens automatically before command execution.
 
-```rust
-use kodegen_tools_terminal::CommandManager;
+### Architecture
 
-let cmd_manager = CommandManager::with_defaults();
-
-// Blocked commands include:
-// - Destructive: rm, dd, shred, truncate
-// - Privilege: sudo, su, doas
-// - Network: wget, curl, nc, ssh
-// - System: reboot, shutdown, kill
-
-assert!(!cmd_manager.validate_command("sudo rm -rf /"));
-assert!(cmd_manager.validate_command("ls -la"));
+```text
+Terminal::execute_command()
+         ↓
+ValidationEngine::validate()
+         ↓
+    [Rule Lookup]
+         ↓
+   [Analyzers]
+    ↓         ↓
+FlagAnalyzer  PathAnalyzer
+         ↓
+[ValidationDecision]
 ```
 
-Custom blocked commands:
+### Default Security Rules
+
+The validation engine comes with hardcoded security rules covering five categories:
+
+#### 1. Always Blocked Commands
+Never allowed due to security risks:
+- **Privilege escalation**: `sudo`, `su`, `doas`
+- **System control**: `reboot`, `shutdown`, `halt`, `poweroff`
+
+#### 2. Destructive Commands
+Pattern-based restrictions for data-modifying commands:
+- **File deletion**: `rm`, `rmdir` (blocks `-rf`, `-fr`, system paths)
+- **Disk operations**: `dd`, `shred`, `wipe`
+- **Disk formatting**: `mkfs.*`, `fdisk`, `parted`
+
+#### 3. Permission Commands
+Access control modification:
+- **File permissions**: `chmod`, `chown`, `chgrp`
+- **Extended attributes**: `chattr`, `setfacl`
+
+#### 4. System Modification
+Configuration changes:
+- **Firewall**: `iptables`, `ufw`, `firewall-cmd`
+- **Services**: `systemctl`, `service`
+- **Filesystems**: `mount`, `umount`
+
+#### 5. Package Management
+Software installation:
+- **System packages**: `apt`, `yum`, `dnf`, `pacman`
+- **Language packages**: `npm`, `pip`, `gem`, `cargo`
+
+### Basic Usage
+
+Validation is automatic - no explicit calls needed:
 
 ```rust
-let cmd_manager = CommandManager::new(vec![
-    "custom_dangerous_cmd".to_string(),
-]);
+use kodegen_tools_terminal::pty::terminal::Terminal;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Create terminal (ValidationEngine initialized automatically)
+    let terminal = Terminal::builder().build().await?;
+
+    // Safe commands are allowed
+    let result = terminal.execute_command(
+        request_id,
+        "ls -la".to_string(),
+        5000
+    ).await?;
+
+    // Dangerous commands are blocked
+    let result = terminal.execute_command(
+        request_id,
+        "rm -rf /".to_string(),
+        5000
+    ).await?;
+    // Returns error with educational message about using MCP tools
+
+    Ok(())
+}
 ```
+
+### Programmatic Customization
+
+Add custom validation rules programmatically:
+
+```rust
+use kodegen_tools_terminal::validation::{ValidationEngine, CommandRule, ViolationType};
+use std::borrow::Cow;
+
+// Access the terminal's validation engine
+let engine = &terminal.validation_engine;
+
+// Add custom rule with builder pattern
+let rule = CommandRule::builder("mycmd")
+    .default_allow(true)
+    .block_pattern(
+        Cow::Borrowed(r"--dangerous-flag"),
+        ViolationType::DangerousFlag,
+        "This flag is dangerous"
+    )
+    .restricted_path("/sensitive/data")
+    .build();
+
+engine.add_rule(rule);
+
+// Add always-blocked command
+engine.add_rule(CommandRule::always_blocked("forbidden-cmd"));
+```
+
+### Validation Decision Types
+
+Commands are either allowed or blocked:
+
+```rust
+use kodegen_tools_terminal::validation::{ValidationDecision, ViolationType};
+
+match engine.validate("rm -rf /") {
+    ValidationDecision::Allow => {
+        // Command is safe to execute
+    }
+    ValidationDecision::Block { reason, violation_type } => {
+        // Command blocked with explanation
+        match violation_type {
+            ViolationType::AlwaysBlocked => { /* Never allowed */ }
+            ViolationType::DangerousFlag => { /* Dangerous flag detected */ }
+            ViolationType::RestrictedPath => { /* Restricted path access */ }
+        }
+    }
+}
+```
+
+### Educational Builtins
+
+Some Unix commands are intercepted before validation to guide users toward MCP tools:
+
+- `find` → Use `fs_search` tool (10-100x faster)
+- `grep` → Use `fs_search` tool with content search
+- `mv` → Use `fs_move_file` tool
+- `chmod`, `chown` → Not needed (MCP tools handle permissions)
+- `ln` → Use `fs_move_file` or `fs_write_file`
+- `kill`, `killall`, `pkill` → Use `process_kill` tool
+
+These intercepts provide friendly educational messages with examples.
+
+### Performance
+
+- **Rule lookup**: O(1) average case (DashMap concurrent hashmap)
+- **Pre-compiled patterns**: Regex patterns compiled once at startup
+- **Zero-allocation validation**: Reuses existing allocations
+- **Thread-safe**: All operations safe for concurrent access
+- **Open-world**: Unknown commands allowed by default (no overhead)
 
 ## Architecture Highlights
 

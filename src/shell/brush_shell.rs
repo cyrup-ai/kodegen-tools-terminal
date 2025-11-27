@@ -2,7 +2,7 @@ use brush_core::Shell as BrushCoreShell;
 use brush_core::builtins::builtin;
 use std::io;
 
-use super::builtins::{SedCommand, LsCommand, LsdCommand};
+use super::builtins::{SedCommand, LsCommand, LsdCommand, FindCommand, GrepCommand, MvCommand, ChmodCommand, ChownCommand, LnCommand, KillCommand, KillallCommand, PkillCommand};
 
 #[derive(Clone)]
 pub struct BrushShell {
@@ -16,6 +16,21 @@ impl BrushShell {
 
         // Override sed to redirect to kodegen filesystem tools
         builtins.insert("sed".to_string(), builtin::<SedCommand>());
+
+        // Override find, grep, mv to redirect to kodegen filesystem tools
+        builtins.insert("find".to_string(), builtin::<FindCommand>());
+        builtins.insert("grep".to_string(), builtin::<GrepCommand>());
+        builtins.insert("mv".to_string(), builtin::<MvCommand>());
+
+        // Override chmod, chown, ln - educational builtins (no MCP replacements)
+        builtins.insert("chmod".to_string(), builtin::<ChmodCommand>());
+        builtins.insert("chown".to_string(), builtin::<ChownCommand>());
+        builtins.insert("ln".to_string(), builtin::<LnCommand>());
+
+        // Override kill, killall, pkill - redirect to process management tools
+        builtins.insert("kill".to_string(), builtin::<KillCommand>());
+        builtins.insert("killall".to_string(), builtin::<KillallCommand>());
+        builtins.insert("pkill".to_string(), builtin::<PkillCommand>());
 
         // Override ls and lsd with kgls (blazing-fast ls/lsd replacement)
         builtins.insert("ls".to_string(), builtin::<LsCommand>());
@@ -49,6 +64,21 @@ impl BrushShell {
 
         // Override sed to redirect to kodegen filesystem tools
         builtins.insert("sed".to_string(), builtin::<SedCommand>());
+
+        // Override find, grep, mv to redirect to kodegen filesystem tools
+        builtins.insert("find".to_string(), builtin::<FindCommand>());
+        builtins.insert("grep".to_string(), builtin::<GrepCommand>());
+        builtins.insert("mv".to_string(), builtin::<MvCommand>());
+
+        // Override chmod, chown, ln - educational builtins (no MCP replacements)
+        builtins.insert("chmod".to_string(), builtin::<ChmodCommand>());
+        builtins.insert("chown".to_string(), builtin::<ChownCommand>());
+        builtins.insert("ln".to_string(), builtin::<LnCommand>());
+
+        // Override kill, killall, pkill - redirect to process management tools
+        builtins.insert("kill".to_string(), builtin::<KillCommand>());
+        builtins.insert("killall".to_string(), builtin::<KillallCommand>());
+        builtins.insert("pkill".to_string(), builtin::<PkillCommand>());
 
         // Override ls and lsd with kgls (blazing-fast ls/lsd replacement)
         builtins.insert("ls".to_string(), builtin::<LsCommand>());

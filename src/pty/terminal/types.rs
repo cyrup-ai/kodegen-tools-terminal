@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 use alacritty_terminal::grid::Dimensions;
 
+use crate::validation::ValidationDecision;
+
 /// Represents a virtual terminal component
 /// Terminal emulator using three-thread architecture:
 /// - BrushExecutor: Executes commands, emits ShellOutput events
@@ -23,7 +25,10 @@ pub struct Terminal {
     #[allow(dead_code)]
     pub(super) buffer_rx: tokio::sync::Mutex<broadcast::Receiver<super::TerminalBuffer>>,
 
-    /// Command validation manager for security
+    /// New validation engine for context-aware command validation
+    pub(super) validation_engine: crate::validation::ValidationEngine,
+
+    /// Command parsing utilities (kept for parsing, validation moved to ValidationEngine)
     pub(super) command_manager: crate::validation::CommandManager,
 }
 
@@ -64,35 +69,45 @@ impl Terminal {
         use super::TerminalBuffer;
         let start = std::time::Instant::now();
 
-        // Validate command for security before execution
-        if !self.command_manager.validate_command(&command) {
-            let base_cmd = self.command_manager.get_base_command(&command);
-            let duration_ms = start.elapsed().as_millis() as u64;
+        // NEW: Validate command using ValidationEngine
+        let decision = self.validation_engine.validate(&command);
 
-            log::warn!("Blocked dangerous command: '{}'", base_cmd);
+        match decision {
+            ValidationDecision::Block { reason, violation_type } => {
+                let base_cmd = self.command_manager.get_base_command(&command);
+                let duration_ms = start.elapsed().as_millis() as u64;
 
-            return Ok(kodegen_mcp_schema::terminal::TerminalOutput {
-                terminal: Some(self.terminal_id),
-                output: format!(
-                    "Error: Command '{}' is blocked for security reasons.\n\n\
-                     This command has been identified as potentially dangerous:\n\
-                     - File destruction (rm, dd, shred)\n\
-                     - Privilege escalation (sudo, su)\n\
-                     - System control (reboot, shutdown)\n\
-                     - Network operations (wget, curl, ssh)\n\
-                     - Or other high-risk operations\n\n\
-                     Instead, use KODEGEN's safe filesystem and process tools:\n\
-                     • fs_read_file / fs_write_file - Safe file operations\n\
-                     • fs_search / fs_edit_block - Search and edit files\n\
-                     • process_execute - Controlled process execution\n\n\
-                     For legitimate use cases, please use the appropriate KODEGEN tools.",
-                    base_cmd
-                ),
-                exit_code: Some(1),
-                cwd: "/".to_string(),
-                duration_ms,
-                completed: true,
-            });
+                log::warn!(
+                    "Blocked command '{}': {:?} - {}",
+                    base_cmd,
+                    violation_type,
+                    reason
+                );
+
+                return Ok(kodegen_mcp_schema::terminal::TerminalOutput {
+                    terminal: Some(self.terminal_id),
+                    output: format!(
+                        "Error: Command '{}' is not allowed.\n\n\
+                         Reason: {}\n\n\
+                         Violation type: {:?}\n\n\
+                         Please use KODEGEN's MCP tools for safe operations:\n\
+                         • fs_read_file / fs_write_file - Safe file operations\n\
+                         • fs_search / fs_edit_block - Search and edit files\n\
+                         • process_list / process_kill - Process management\n\
+                         • terminal - Execute commands in sandboxed shell\n",
+                        base_cmd,
+                        reason,
+                        violation_type
+                    ),
+                    exit_code: Some(1),
+                    cwd: "/".to_string(),
+                    duration_ms,
+                    completed: true,
+                });
+            }
+            ValidationDecision::Allow => {
+                // Command allowed, continue to shell execution
+            }
         }
 
         // Subscribe to buffer events (creates new receiver from broadcast sender)

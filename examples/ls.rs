@@ -151,11 +151,11 @@ async fn demo_kill_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
     // Verify it's gone by trying to list
     let list_output = registry.list_all_terminals("demo-connection").await?;
     log::info!("\n   Verification (LIST after KILL):");
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_output.output) {
-        if let Some(arr) = parsed.as_array() {
-            log::info!("      Remaining terminals: {}", arr.len());
-            log::info!("      ✅ Terminal:1 successfully removed!");
-        }
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_output.output)
+        && let Some(arr) = parsed.as_array()
+    {
+        log::info!("      Remaining terminals: {}", arr.len());
+        log::info!("      ✅ Terminal:1 successfully removed!");
     }
 
     Ok(())

@@ -1,3 +1,17 @@
+//! Command parsing utilities
+//!
+//! This module provides utility functions for parsing and extracting information
+//! from shell command strings. It handles complex cases like compound commands,
+//! environment variable prefixes, and full paths.
+//!
+//! **Note**: For command validation, use `ValidationEngine` (in `validator.rs`).
+//! This module only provides parsing utilities.
+//!
+//! # Utilities:
+//! - `get_base_command()` - Extract command name from full command string
+//! - `extract_commands()` - Split compound commands (&&, ||, ;, |)
+//! - `extract_base_command()` - Handle environment variable prefixes
+
 use log::warn;
 use regex::Regex;
 use std::collections::HashSet;
@@ -17,106 +31,15 @@ static ENV_VAR_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     }
 });
 
-/// Command manager for validating and parsing commands
-#[derive(Clone)]
-pub struct CommandManager {
-    blocked_commands: Vec<String>,
-}
+/// Command manager for parsing commands
+#[derive(Clone, Copy)]
+pub struct CommandManager;
 
 impl CommandManager {
-    /// Create a new command manager instance with a list of blocked commands
-    /// Commands are automatically converted to lowercase for case-insensitive blocking
+    /// Create a new command manager instance
     #[must_use]
-    pub fn new(blocked_commands: Vec<String>) -> Self {
-        // Normalize all blocked commands to lowercase
-        let normalized = blocked_commands
-            .into_iter()
-            .map(|cmd| cmd.to_lowercase())
-            .collect();
-
-        Self {
-            blocked_commands: normalized,
-        }
-    }
-
-    /// Create with default blocked commands
-    #[must_use]
-    pub fn with_defaults() -> Self {
-        Self::new(vec![
-            // File operations (destructive)
-            "rm".to_string(),
-            "rmdir".to_string(),
-            "del".to_string(),
-            "deltree".to_string(),
-            "mv".to_string(), // NEW: Can rename/move critical files
-            "dd".to_string(),
-            "shred".to_string(),
-            "wipe".to_string(),
-            "truncate".to_string(), // NEW: Can destroy file contents
-            // Filesystem operations
-            "format".to_string(),
-            "fdisk".to_string(),
-            "mkfs".to_string(),
-            "mount".to_string(),  // NEW: Can mount malicious filesystems
-            "umount".to_string(), // NEW: Can unmount critical filesystems
-            // System control
-            "reboot".to_string(),   // NEW
-            "shutdown".to_string(), // NEW
-            "halt".to_string(),     // NEW
-            "poweroff".to_string(), // NEW
-            "init".to_string(),     // NEW: Can change runlevels
-            // Process control
-            "kill".to_string(),     // NEW
-            "killall".to_string(),  // NEW
-            "pkill".to_string(),    // NEW
-            "killall5".to_string(), // NEW
-            // Privilege escalation
-            "sudo".to_string(),
-            "su".to_string(),
-            "doas".to_string(), // NEW: OpenBSD sudo alternative
-            // Permission/ownership changes
-            "chmod".to_string(),
-            "chown".to_string(),
-            "chgrp".to_string(),  // NEW: Change group ownership
-            "chattr".to_string(), // NEW: Change file attributes (immutable, etc.)
-            // User management
-            "passwd".to_string(),
-            "useradd".to_string(),
-            "userdel".to_string(),
-            "usermod".to_string(), // NEW
-            "groupadd".to_string(),
-            "groupdel".to_string(),
-            "groupmod".to_string(), // NEW
-            "visudo".to_string(),   // NEW: Edit sudoers file
-            // Network operations (exfiltration risk)
-            "nc".to_string(),     // NEW: netcat
-            "netcat".to_string(), // NEW
-            "wget".to_string(),   // NEW
-            "curl".to_string(),   // NEW
-            "ftp".to_string(),    // NEW
-            "sftp".to_string(),   // NEW
-            "scp".to_string(),    // NEW
-            "rsync".to_string(),  // NEW
-            "ssh".to_string(),    // NEW: Can tunnel/forward
-            "telnet".to_string(), // NEW
-            // Code execution
-            "eval".to_string(),   // NEW: Execute arbitrary code
-            "exec".to_string(),   // NEW
-            "source".to_string(), // NEW: Execute script in current shell
-            ".".to_string(),      // NEW: Dot command (source alias)
-            // Command injection vectors
-            "find".to_string(),  // NEW: -exec flag allows command injection
-            "xargs".to_string(), // NEW: Executes commands from input
-            // System modification
-            "sysctl".to_string(),   // NEW: Modify kernel parameters
-            "modprobe".to_string(), // NEW: Load kernel modules
-            "insmod".to_string(),   // NEW: Insert kernel module
-            "rmmod".to_string(),    // NEW: Remove kernel module
-            // Symlink creation (can bypass restrictions)
-            "ln".to_string(),     // NEW: Create hard/soft links
-            "link".to_string(),   // NEW
-            "unlink".to_string(), // NEW
-        ])
+    pub fn new() -> Self {
+        Self
     }
 
     /// Extract the base command (first word, lowercase, trimmed) from a command string
@@ -365,41 +288,10 @@ impl CommandManager {
         Ok(Some(basename.to_lowercase()))
     }
 
-    /// Validate a command against blocked commands list
-    /// Returns true if command is allowed, false if blocked
-    #[must_use]
-    pub fn validate_command(&self, command: &str) -> bool {
-        let commands = self.extract_commands(command);
-        let base_command = self.get_base_command(command);
-
-        // If extract_commands() returned empty (parsing error), check base command only
-        // This is safer than allowing the command through
-        if commands.is_empty() {
-            log::warn!("Command parsing failed, checking base command only: '{base_command}'");
-            return !self.blocked_commands.contains(&base_command);
-        }
-
-        // Check if any of the extracted commands are in the blocked list
-        for cmd in &commands {
-            if self.blocked_commands.contains(cmd) {
-                log::debug!("Blocked command detected: '{cmd}'");
-                return false; // Command is blocked
-            }
-        }
-
-        // No commands were blocked
-        true
-    }
-
-    /// Get the list of blocked commands
-    #[must_use]
-    pub fn get_blocked_commands(&self) -> &[String] {
-        &self.blocked_commands
-    }
 }
 
 impl Default for CommandManager {
     fn default() -> Self {
-        Self::with_defaults()
+        Self::new()
     }
 }
