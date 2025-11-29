@@ -23,6 +23,11 @@ impl TerminalTool {
             registry: Arc::new(TerminalRegistry::new()),
         }
     }
+
+    /// Get the terminal registry for connection cleanup
+    pub fn registry(&self) -> Arc<TerminalRegistry> {
+        self.registry.clone()
+    }
 }
 
 impl Default for TerminalTool {

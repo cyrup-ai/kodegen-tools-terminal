@@ -116,6 +116,37 @@ impl TerminalRegistry {
             ))
         }
     }
+
+    /// Cleanup all terminals for a connection
+    ///
+    /// Called when a connection drops to cleanup all associated terminal sessions.
+    /// Returns the number of terminals cleaned up.
+    pub async fn cleanup_connection(&self, connection_id: &str) -> usize {
+        let mut terminals = self.terminals.lock().await;
+
+        // Collect terminal IDs to remove
+        let to_remove: Vec<(String, u32)> = terminals
+            .keys()
+            .filter(|(conn_id, _)| conn_id == connection_id)
+            .cloned()
+            .collect();
+
+        let count = to_remove.len();
+
+        // Remove and drop each terminal (Drop impl kills shell, closes PTY)
+        for key in to_remove {
+            if let Some(terminal) = terminals.remove(&key) {
+                log::debug!(
+                    "Cleaning up terminal {} for connection {}",
+                    key.1,
+                    connection_id
+                );
+                drop(terminal);
+            }
+        }
+
+        count
+    }
 }
 
 impl Default for TerminalRegistry {
