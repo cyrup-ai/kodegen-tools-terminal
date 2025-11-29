@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.3.5"
+version = "0.4.0"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -28,11 +28,11 @@ macos = "public.app-category.developer-tools"
 
 
 [dependencies]
-kodegen_mcp_schema = { version = "0.3" }
-kodegen_mcp_tool = { version = "0.3" }
-kodegen_config_manager = { version = "0.3" }
-kodegen_server_http = { version = "0.3" }
-kgls = { version = "0.1" }
+kodegen_mcp_schema = { version = "0.4" }
+kodegen_mcp_tool = { version = "0.4" }
+kodegen_config_manager = { version = "0.4" }
+kodegen_server_http = { version = "0.4" }
+kgls = { version = "0.4" }
 
 # MCP SDK - for Tool implementation
 rmcp = { version = "0.9", features = ["client", "schemars", "server"] }
