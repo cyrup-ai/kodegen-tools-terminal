@@ -17,8 +17,14 @@ pub struct Terminal {
     /// Handle to BrushExecutor thread (drop = shutdown)
     pub(super) brush_handle: Option<crate::shell::ShellHandle>,
 
+    /// JoinHandle for BrushExecutor thread
+    pub(super) brush_join_handle: Option<tokio::task::JoinHandle<()>>,
+
     /// Handle to VteProcessor thread (drop = shutdown)
     pub(super) vte_handle: Option<super::vte_processor::VteHandle>,
+
+    /// JoinHandle for VteProcessor thread
+    pub(super) vte_join_handle: Option<tokio::task::JoinHandle<()>>,
 
     /// Pre-subscribed receiver for TerminalBuffer events (subscribed in builder)
     /// Kept alive to prevent broadcast channel from dropping events before subscribers exist
@@ -58,13 +64,17 @@ impl Terminal {
     /// # Timeout Behavior
     /// - `await_completion_ms = 0`: Fire-and-forget (returns immediately, command runs in background)
     /// - `await_completion_ms > 0`: Wait up to N milliseconds for completion
-    ///   - On timeout: returns current 80x24 VTE buffer snapshot, command continues in background
+    ///   - On timeout: returns current 120x200 VTE buffer snapshot, command continues in background
     ///   - Use action=READ to check progress later
+    ///
+    /// # Tail Parameter
+    /// - `tail`: Maximum number of lines to return from the end of the buffer
     pub async fn execute_command(
         &self,
         request_id: rmcp::model::RequestId,
         command: String,
         await_completion_ms: u64,
+        tail: u32,
     ) -> Result<kodegen_mcp_schema::terminal::TerminalOutput, anyhow::Error> {
         use super::TerminalBuffer;
         let start = std::time::Instant::now();
@@ -153,7 +163,13 @@ impl Terminal {
                     Ok(TerminalBuffer::Updated { request_id: event_req_id, lines, cwd, exit_code, is_final, .. }) => {
                         // Filter: only process events matching our request_id
                         if event_req_id == request_id {
-                            final_output = lines.join("\n");
+                            // Apply tail limit - take last N lines
+                            let output_lines = if tail > 0 && lines.len() > tail as usize {
+                                &lines[lines.len() - tail as usize..]
+                            } else {
+                                &lines[..]
+                            };
+                            final_output = output_lines.join("\n");
                             final_cwd = cwd;
                             final_exit_code = Some(exit_code);
                             if is_final {
@@ -171,11 +187,11 @@ impl Terminal {
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        // Handle timeout: return current 80x24 VTE buffer snapshot
+        // Handle timeout: return current 120x200 VTE buffer snapshot
         if result.is_err() {
             final_output.push_str(&format!(
                 "\n\n[Command still running after {}ms timeout]\n\
-                 [This is the current 80x24 VTE buffer snapshot]\n\
+                 [This is the current 120x200 VTE buffer snapshot]\n\
                  [Command continues in background - use action=READ to check progress]",
                 await_completion_ms
             ));
@@ -203,37 +219,114 @@ impl Terminal {
 
     /// Read current terminal state without executing a command
     ///
-    /// Returns the current 80x24 VTE buffer snapshot - useful for checking
+    /// Returns the current VTE buffer snapshot - useful for checking
     /// progress of long-running commands or background tasks.
+    ///
+    /// # Tail Parameter
+    /// - `tail`: Maximum number of lines to return from the end of the buffer
     pub async fn read_current_state(
         &self,
         terminal_id: u32,
+        tail: u32,
     ) -> Result<kodegen_mcp_schema::terminal::TerminalOutput, anyhow::Error> {
         let start = std::time::Instant::now();
 
-        // Subscribe to buffer to get latest state
-        let mut buffer_rx = self.subscribe_buffer()
+        // Read grid directly from VteHandle - no broadcast channel
+        let vte_handle = self.vte_handle.as_ref()
             .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
 
-        // Try to get the most recent buffer (non-blocking)
-        let (output, cwd) = match buffer_rx.try_recv() {
-            Ok(super::TerminalBuffer::Updated { lines, cwd, .. }) => {
-                (lines.join("\n"), cwd.display().to_string())
-            }
-            _ => {
-                // No recent buffer available, return empty state
-                (String::new(), "/".to_string())
-            }
-        };
+        let (lines, cwd, exit_code) = vte_handle.read_grid(tail);
+        let output = lines.join("\n");
 
         Ok(kodegen_mcp_schema::terminal::TerminalOutput {
             terminal: Some(terminal_id),
             output,
-            exit_code: None, // Unknown if still running
+            exit_code,
             cwd,
             duration_ms: start.elapsed().as_millis() as u64,
             completed: true, // READ operation itself is complete
         })
+    }
+
+    /// Explicit async shutdown - waits for all background threads to exit
+    ///
+    /// This MUST be called before Terminal is dropped to ensure clean shutdown.
+    /// Shutdown order:
+    /// 1. Send Shutdown to BrushInteractive, await its exit (drops BrushShell, closes PTY slave)
+    /// 2. Await PTY reader (gets EOF from PTY master when slave closes)
+    /// 3. Send Shutdown to VteProcessor, await its exit
+    pub async fn shutdown(mut self) {
+        log::debug!("Terminal {} shutting down", self.terminal_id);
+
+        // Take brush_handle to get pty_reader_join_handle
+        let brush_handle = self.brush_handle.take();
+
+        // Send shutdown to BrushInteractive thread
+        if let Some(ref handle) = brush_handle {
+            let _ = handle.command_tx.send(crate::pty::terminal::ExecuteCommand::Shutdown).await;
+        }
+
+        // Await BrushInteractive - this drops BrushShell which closes PTY slave
+        if let Some(handle) = self.brush_join_handle.take() {
+            tokio::pin!(handle);
+            tokio::select! {
+                result = &mut handle => {
+                    match result {
+                        Ok(()) => log::debug!("BrushInteractiveThread exited cleanly"),
+                        Err(e) => log::error!("BrushInteractiveThread panicked: {}", e),
+                    }
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+                    log::warn!("BrushInteractiveThread timeout after 2s, aborting task");
+                    handle.abort();
+                }
+            }
+        }
+
+        // Send Shutdown to PTY reader (it subscribes to output_tx)
+        if let Some(ref handle) = brush_handle {
+            let _ = handle.output_tx.send(crate::pty::terminal::ShellOutput::Shutdown);
+        }
+
+        // Await PTY reader
+        if let Some(handle) = brush_handle {
+            let pty_handle = handle.pty_reader_join_handle;
+            tokio::pin!(pty_handle);
+            tokio::select! {
+                result = &mut pty_handle => {
+                    match result {
+                        Ok(()) => log::debug!("PTY reader task exited cleanly"),
+                        Err(e) => log::error!("PTY reader task panicked: {}", e),
+                    }
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+                    log::warn!("PTY reader task timeout after 2s, aborting task");
+                    pty_handle.abort();
+                }
+            }
+        }
+
+        // Drop vte_handle (VteProcessor will exit when shell_output_rx channel closes)
+        drop(self.vte_handle.take());
+
+        // Await VteProcessor
+        if let Some(handle) = self.vte_join_handle.take() {
+            tokio::pin!(handle);
+            tokio::select! {
+                result = &mut handle => {
+                    match result {
+                        Ok(()) => log::debug!("VteProcessorThread exited cleanly"),
+                        Err(e) => log::error!("VteProcessorThread panicked: {}", e),
+                    }
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+                    log::warn!("VteProcessorThread timeout after 2s, aborting task");
+                    handle.abort();
+                }
+            }
+        }
+
+        log::debug!("Terminal {} shutdown complete", self.terminal_id);
     }
 }
 
@@ -312,3 +405,5 @@ pub enum KeyCode {
     Esc,
     // Add other key codes as needed
 }
+
+

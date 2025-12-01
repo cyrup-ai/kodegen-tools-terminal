@@ -58,8 +58,8 @@ impl TerminalRegistry {
         let mut snapshots = Vec::new();
         for ((conn_id, term_id), terminal) in terminals.iter() {
             if conn_id == connection_id {
-                // Get current state without blocking
-                let state = terminal.read_current_state(*term_id).await?;
+                // Get current state without blocking (use default tail of 2000)
+                let state = terminal.read_current_state(*term_id, 2000).await?;
                 snapshots.push(serde_json::json!({
                     "terminal": term_id,
                     "output": state.output,
@@ -93,16 +93,25 @@ impl TerminalRegistry {
         let key = (connection_id.to_string(), terminal_id);
         let mut terminals = self.terminals.lock().await;
 
-        if let Some(terminal) = terminals.remove(&key) {
-            // Terminal::drop() handles graceful shutdown of all components
-            drop(terminal);
+        if let Some(terminal_arc) = terminals.remove(&key) {
+            // Drop lock before awaiting shutdown
+            drop(terminals);
+
+            // Unwrap Arc and call explicit async shutdown
+            match Arc::try_unwrap(terminal_arc) {
+                Ok(terminal) => terminal.shutdown().await,
+                Err(arc) => {
+                    log::warn!(
+                        "Terminal {} still has {} references, cannot shutdown cleanly",
+                        terminal_id,
+                        Arc::strong_count(&arc)
+                    );
+                }
+            }
 
             Ok(TerminalOutput {
                 terminal: Some(terminal_id),
-                output: format!(
-                    "Terminal {} gracefully shutdown and all resources cleaned up",
-                    terminal_id
-                ),
+                output: format!("Terminal {} shutdown complete", terminal_id),
                 exit_code: Some(0),
                 cwd: "/".to_string(),
                 duration_ms: start.elapsed().as_millis() as u64,
@@ -133,15 +142,28 @@ impl TerminalRegistry {
 
         let count = to_remove.len();
 
-        // Remove and drop each terminal (Drop impl kills shell, closes PTY)
-        for key in to_remove {
-            if let Some(terminal) = terminals.remove(&key) {
-                log::debug!(
-                    "Cleaning up terminal {} for connection {}",
-                    key.1,
-                    connection_id
-                );
-                drop(terminal);
+        // Remove and collect Arc<Terminal> instances
+        let terminal_arcs: Vec<_> = to_remove
+            .into_iter()
+            .filter_map(|key| terminals.remove(&key))
+            .collect();
+
+        // Drop lock before awaiting shutdowns
+        drop(terminals);
+
+        // Shutdown each terminal explicitly
+        for terminal_arc in terminal_arcs {
+            match Arc::try_unwrap(terminal_arc) {
+                Ok(terminal) => {
+                    log::debug!("Shutting down terminal for connection {}", connection_id);
+                    terminal.shutdown().await;
+                }
+                Err(arc) => {
+                    log::warn!(
+                        "Terminal still has {} references, cannot shutdown cleanly",
+                        Arc::strong_count(&arc)
+                    );
+                }
             }
         }
 

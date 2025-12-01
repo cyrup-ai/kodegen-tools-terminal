@@ -102,8 +102,9 @@ impl TerminalBuilder {
     ///
     /// Returns a ready-to-use Terminal (no separate init() needed).
     pub async fn build(self) -> io::Result<Terminal> {
-        let rows = self.rows.unwrap_or(30);
-        let cols = self.cols.unwrap_or(100);
+        log::debug!("TerminalBuilder::build() called");
+        let rows = self.rows.unwrap_or(200);
+        let cols = self.cols.unwrap_or(120);
 
         let term_size = TermSize {
             cols,
@@ -111,11 +112,8 @@ impl TerminalBuilder {
             scrollback: self.scrollback,
         };
 
-        // Create persistent brush shell for BrushExecutor
-        let shell = crate::shell::BrushShell::new().await?;
-
-        // Spawn BrushExecutor thread
-        let (brush_handle, _brush_join_handle) = crate::shell::BrushInteractiveThread::spawn(shell);
+        // Spawn BrushExecutor thread (creates shell internally with PTY configured)
+        let (brush_handle, brush_join_handle) = crate::shell::BrushInteractiveThread::spawn(cols, rows).await?;
 
         // Subscribe to shell output for VTE processing
         let shell_output_rx = brush_handle.output_tx.subscribe();
@@ -127,7 +125,7 @@ impl TerminalBuilder {
         let initial_cwd = std::path::PathBuf::from(initial_cwd);
 
         // Spawn VteProcessor thread (creates its own Term with term_size)
-        let (vte_handle, _vte_join_handle) = super::VteProcessorThread::spawn(
+        let (vte_handle, vte_join_handle) = super::VteProcessorThread::spawn(
             shell_output_rx,
             initial_cwd,
             term_size,
@@ -149,7 +147,9 @@ impl TerminalBuilder {
         Ok(Terminal {
             terminal_id: self.terminal_id.unwrap_or(0),
             brush_handle: Some(brush_handle),
+            brush_join_handle: Some(brush_join_handle),
             vte_handle: Some(vte_handle),
+            vte_join_handle: Some(vte_join_handle),
             buffer_rx: tokio::sync::Mutex::new(buffer_rx),
             validation_engine,
             command_manager,

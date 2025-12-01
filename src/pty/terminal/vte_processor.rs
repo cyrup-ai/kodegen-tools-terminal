@@ -7,19 +7,68 @@ use alacritty_terminal::term::{Term, Config as AlacrittyConfig};
 use alacritty_terminal::index::{Line, Column};
 use alacritty_terminal::grid::Dimensions;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 
 /// Handle to control the VteProcessor thread
 pub struct VteHandle {
     pub buffer_tx: broadcast::Sender<TerminalBuffer>,
-    pub shutdown_flag: Arc<AtomicBool>,
+    pub term: Arc<FairMutex<Term<EventBridge>>>,
+    pub current_cwd: Arc<RwLock<PathBuf>>,
+    pub last_exit_code: Arc<RwLock<Option<i32>>>,
 }
 
-impl Drop for VteHandle {
-    fn drop(&mut self) {
-        self.shutdown_flag.store(true, Ordering::Relaxed);
+impl VteHandle {
+    /// Read current grid state directly (for READ/LIST actions)
+    ///
+    /// Returns (lines, cwd, exit_code) tuple with the current terminal buffer content,
+    /// working directory, and last known exit code.
+    pub fn read_grid(&self, tail: u32) -> (Vec<String>, String, Option<i32>) {
+        let term = self.term.lock_unfair();
+        let grid = term.grid();
+
+        // Extract lines from full grid including scrollback
+        let history_size = grid.history_size();
+        let screen_lines = grid.screen_lines();
+        let total_lines = history_size + screen_lines;
+
+        let mut lines = Vec::with_capacity(total_lines);
+        for line_idx in (-(history_size as i32))..(screen_lines as i32) {
+            let line = &grid[Line(line_idx)];
+            let mut line_str = String::with_capacity(grid.columns());
+            for col_idx in 0..grid.columns() {
+                line_str.push(line[Column(col_idx)].c);
+            }
+            lines.push(line_str.trim_end().to_string());
+        }
+
+        // Trim trailing empty lines
+        while let Some(last) = lines.last() {
+            if last.is_empty() {
+                lines.pop();
+            } else {
+                break;
+            }
+        }
+
+        // Apply tail limit
+        let output_lines = if tail > 0 && lines.len() > tail as usize {
+            lines[lines.len() - tail as usize..].to_vec()
+        } else {
+            lines
+        };
+
+        // Get cwd from shared state
+        let cwd = self.current_cwd.read()
+            .map(|guard| guard.display().to_string())
+            .unwrap_or_else(|_| "/".to_string());
+
+        // Get last exit code from shared state
+        let exit_code = self.last_exit_code.read()
+            .map(|guard| *guard)
+            .unwrap_or(None);
+
+        (output_lines, cwd, exit_code)
     }
 }
 
@@ -32,8 +81,8 @@ pub struct VteProcessorThread {
     term: Arc<FairMutex<Term<EventBridge>>>,
     shell_output_rx: broadcast::Receiver<ShellOutput>,
     buffer_tx: broadcast::Sender<TerminalBuffer>,
-    shutdown_flag: Arc<AtomicBool>,
-    current_cwd: PathBuf,
+    current_cwd: Arc<RwLock<PathBuf>>,
+    last_exit_code: Arc<RwLock<Option<i32>>>,
 }
 
 impl VteProcessorThread {
@@ -43,7 +92,6 @@ impl VteProcessorThread {
         term_size: super::TermSize,
     ) -> (VteHandle, tokio::task::JoinHandle<()>) {
         let (buffer_tx, _) = broadcast::channel(1024);
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
 
         // VteProcessor creates and owns its Term exclusively
         let event_bridge = EventBridge::new(buffer_tx.clone());
@@ -55,14 +103,16 @@ impl VteProcessorThread {
         let term = Arc::new(FairMutex::new(term));
 
         let parser = vte::ansi::Processor::new();
+        let current_cwd = Arc::new(RwLock::new(initial_cwd));
+        let last_exit_code = Arc::new(RwLock::new(None));
 
         let thread_impl = Self {
             parser,
-            term,
+            term: term.clone(),
             shell_output_rx,
             buffer_tx: buffer_tx.clone(),
-            shutdown_flag: shutdown_flag.clone(),
-            current_cwd: initial_cwd,
+            current_cwd: current_cwd.clone(),
+            last_exit_code: last_exit_code.clone(),
         };
 
         let join_handle = tokio::spawn(async move {
@@ -71,7 +121,9 @@ impl VteProcessorThread {
 
         let vte_handle = VteHandle {
             buffer_tx,
-            shutdown_flag,
+            term,
+            current_cwd,
+            last_exit_code,
         };
 
         (vte_handle, join_handle)
@@ -80,9 +132,13 @@ impl VteProcessorThread {
     async fn run(mut self) {
         log::debug!("VteProcessor task starting");
 
-        while !self.shutdown_flag.load(Ordering::Relaxed) {
+        loop {
             log::debug!("VteProcessor: waiting for next event");
             match self.shell_output_rx.recv().await {
+                Ok(ShellOutput::Shutdown) => {
+                    log::debug!("VteProcessor: received Shutdown event, exiting");
+                    break;
+                }
                 Ok(event) => {
                     log::debug!("VteProcessor: recv() returned an event");
                     self.process_shell_output(event);
@@ -123,11 +179,21 @@ impl VteProcessorThread {
             }
             ShellOutput::ExecComplete { request_id, exit_code, cwd } => {
                 log::debug!("VteProcessor: ExecComplete for request_id={:?}, exit_code={}", request_id, exit_code);
-                // Update CWD tracking
-                self.current_cwd = cwd;
+                // Update CWD tracking (write to shared RwLock)
+                if let Ok(mut cwd_guard) = self.current_cwd.write() {
+                    *cwd_guard = cwd;
+                }
+                // Update exit code tracking (write to shared RwLock)
+                if let Ok(mut exit_guard) = self.last_exit_code.write() {
+                    *exit_guard = Some(exit_code as i32);
+                }
 
                 // Emit final update with is_final=true
                 self.emit_buffer_update(request_id, exit_code as i32, true);
+            }
+            ShellOutput::Shutdown => {
+                // This is already handled in run() loop, should never reach here
+                log::warn!("VteProcessor: received Shutdown in process_shell_output (should be handled in run loop)");
             }
         }
     }
@@ -138,20 +204,41 @@ impl VteProcessorThread {
         let term = self.term.lock_unfair();
         let grid = term.grid();
 
-        // Extract lines from grid
-        let mut lines = Vec::with_capacity(grid.screen_lines());
-        for line_idx in 0..grid.screen_lines() {
-            let line = &grid[Line(line_idx as i32)];
+        // Extract lines from full grid including scrollback history
+        // Line indices: negative = scrollback, 0+ = visible screen
+        let history_size = grid.history_size();
+        let screen_lines = grid.screen_lines();
+        let total_lines = history_size + screen_lines;
+        
+        let mut lines = Vec::with_capacity(total_lines);
+        for line_idx in (-(history_size as i32))..(screen_lines as i32) {
+            let line = &grid[Line(line_idx)];
             let mut line_str = String::with_capacity(grid.columns());
             for col_idx in 0..grid.columns() {
                 line_str.push(line[Column(col_idx)].c);
             }
-            lines.push(line_str);
+            // Trim trailing whitespace from each line
+            let trimmed = line_str.trim_end();
+            lines.push(trimmed.to_string());
+        }
+
+        // Trim trailing empty lines
+        while let Some(last) = lines.last() {
+            if last.is_empty() {
+                lines.pop();
+            } else {
+                break;
+            }
         }
 
         // Get cursor position
         let cursor = term.grid().cursor.point;
         drop(term);
+
+        // Read current cwd from shared state
+        let cwd = self.current_cwd.read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| PathBuf::from("/"));
 
         // Emit TerminalBuffer::Updated event
         let _ = self.buffer_tx.send(TerminalBuffer::Updated {
@@ -159,7 +246,7 @@ impl VteProcessorThread {
             lines,
             cursor_line: cursor.line.0 as usize,
             cursor_col: cursor.column.0,
-            cwd: self.current_cwd.clone(),
+            cwd,
             exit_code,
             is_final,
         });

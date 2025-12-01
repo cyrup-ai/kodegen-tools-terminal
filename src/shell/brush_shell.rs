@@ -46,15 +46,17 @@ impl BrushShell {
         Ok(Self { shell })
     }
 
-    /// Create shell with custom stdout/stderr file descriptors
+    /// Create shell with custom stdin/stdout/stderr file descriptors
     pub async fn with_fds(
+        stdin: brush_core::openfiles::OpenFile,
         stdout: brush_core::openfiles::OpenFile,
         stderr: brush_core::openfiles::OpenFile,
     ) -> io::Result<Self> {
         use std::collections::HashMap;
 
-        // Set custom FDs for stdout (1) and stderr (2)
+        // Set custom FDs for stdin (0), stdout (1) and stderr (2)
         let fds: HashMap<_, _> = [
+            (brush_core::openfiles::OpenFiles::STDIN_FD, stdin),
             (brush_core::openfiles::OpenFiles::STDOUT_FD, stdout),
             (brush_core::openfiles::OpenFiles::STDERR_FD, stderr),
         ].into_iter().collect();

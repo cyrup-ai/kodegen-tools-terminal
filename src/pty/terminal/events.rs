@@ -24,6 +24,9 @@ pub enum ShellOutput {
         exit_code: u8,
         cwd: PathBuf,
     },
+
+    /// Shutdown the VteProcessor thread
+    Shutdown,
 }
 
 // ============================================================================
@@ -65,4 +68,6 @@ pub enum ExecuteCommand {
         request_id: rmcp::model::RequestId,
         command: String,
     },
+    /// Shutdown the shell thread
+    Shutdown,
 }

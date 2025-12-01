@@ -28,10 +28,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     demo_list_action(&registry).await?;
     log::info!("\n{}\n", "=".repeat(80));
 
-    // Demo 5: KILL action - Gracefully shutdown terminal
-    demo_kill_action(&registry).await?;
-
     log::info!("\n=== ALL ACTIONS DEMONSTRATED SUCCESSFULLY ===");
+    log::info!("\n💀 CLEANUP: Killing all terminals\n");
+
+    // List before cleanup
+    log::info!("📋 Before cleanup - LIST:");
+    let list_before = registry.list_all_terminals("demo-connection").await?;
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_before.output) {
+        log::info!("{}", serde_json::to_string_pretty(&parsed)?);
+    }
+
+    // Kill terminal 0
+    log::info!("\n💀 Killing terminal 0...");
+    let output0 = registry.kill_terminal("demo-connection", 0).await?;
+    log::info!("   ✅ Terminal 0 killed: exit_code={:?}, duration={}ms", output0.exit_code, output0.duration_ms);
+    
+    // List after killing terminal 0
+    log::info!("\n📋 After killing terminal 0 - LIST:");
+    let list_mid = registry.list_all_terminals("demo-connection").await?;
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_mid.output) {
+        log::info!("{}", serde_json::to_string_pretty(&parsed)?);
+    }
+
+    // Kill terminal 1
+    log::info!("\n💀 Killing terminal 1...");
+    let output1 = registry.kill_terminal("demo-connection", 1).await?;
+    log::info!("   ✅ Terminal 1 killed: exit_code={:?}, duration={}ms", output1.exit_code, output1.duration_ms);
+
+    // List after killing terminal 1
+    log::info!("\n📋 After killing terminal 1 - LIST:");
+    let list_after = registry.list_all_terminals("demo-connection").await?;
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_after.output) {
+        log::info!("{}", serde_json::to_string_pretty(&parsed)?);
+    }
+
+    log::info!("\n✅ All terminals killed, exiting main()");
+    
     Ok(())
 }
 
@@ -49,6 +81,7 @@ async fn demo_exec_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
         request_id,
         "pwd && ls -la".to_string(),
         300_000, // 5 minutes timeout
+        2000,    // tail: return last 2000 lines
     ).await?;
 
     log::info!("   ✅ Command completed:");
@@ -57,8 +90,7 @@ async fn demo_exec_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
     log::info!("      CWD: {}", output.cwd);
     log::info!("      Duration: {}ms", output.duration_ms);
     log::info!("      Completed: {}", output.completed);
-    log::info!("      Output (first 100 chars): {}",
-               output.output.chars().take(100).collect::<String>().replace('\n', "\\n"));
+    log::info!("      Output:\n{}", output.output);
 
     Ok(())
 }
@@ -76,7 +108,8 @@ async fn demo_background_task(registry: &TerminalRegistry) -> Result<(), Box<dyn
     let output = terminal.execute_command(
         request_id,
         "sleep 1 && echo 'Background task complete' && pwd".to_string(),
-        0, // Fire-and-forget!
+        0,    // Fire-and-forget!
+        2000, // tail: return last 2000 lines
     ).await?;
 
     log::info!("   ✅ Background task started:");
@@ -91,22 +124,21 @@ async fn demo_background_task(registry: &TerminalRegistry) -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Demo 3: READ action - Get current 80x24 VTE buffer snapshot
+/// Demo 3: READ action - Get current 120x200 VTE buffer snapshot
 async fn demo_read_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
     log::info!("📖 DEMO 3: READ Action (Get Current Buffer)");
-    log::info!("   - Returns 80x24 VTE buffer snapshot");
+    log::info!("   - Returns 120x200 VTE buffer snapshot");
     log::info!("   - No command execution");
 
     // Read terminal:1 (where background task ran)
     let terminal = registry.find_or_create_terminal("demo-connection", 1).await?;
-    let output = terminal.read_current_state(1).await?;
+    let output = terminal.read_current_state(1, 2000).await?;
 
     log::info!("\n   ✅ Terminal:1 current state:");
     log::info!("      Terminal: {:?}", output.terminal);
     log::info!("      CWD: {}", output.cwd);
     log::info!("      Completed: {} (READ operation itself)", output.completed);
-    log::info!("      Buffer snapshot (first 150 chars): {}",
-               output.output.chars().take(150).collect::<String>().replace('\n', "\\n"));
+    log::info!("      Buffer snapshot:\n{}", output.output);
 
     Ok(())
 }
@@ -133,30 +165,4 @@ async fn demo_list_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Demo 5: KILL action - Gracefully shutdown terminal
-async fn demo_kill_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
-    log::info!("💀 DEMO 5: KILL Action (Graceful Shutdown)");
-    log::info!("   - Cleans up Brush shell, VTE processor, threads, channels");
-    log::info!("   - Terminal:1 will be terminated");
 
-    let output = registry.kill_terminal("demo-connection", 1).await?;
-
-    log::info!("\n   ✅ Terminal killed:");
-    log::info!("      Terminal: {:?}", output.terminal);
-    log::info!("      Exit code: {:?}", output.exit_code);
-    log::info!("      Message: {}", output.output);
-    log::info!("      Duration: {}ms", output.duration_ms);
-    log::info!("      Completed: {}", output.completed);
-
-    // Verify it's gone by trying to list
-    let list_output = registry.list_all_terminals("demo-connection").await?;
-    log::info!("\n   Verification (LIST after KILL):");
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_output.output)
-        && let Some(arr) = parsed.as_array()
-    {
-        log::info!("      Remaining terminals: {}", arr.len());
-        log::info!("      ✅ Terminal:1 successfully removed!");
-    }
-
-    Ok(())
-}

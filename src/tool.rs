@@ -49,7 +49,7 @@ impl Tool for TerminalTool {
          Supports 4 actions: EXEC (execute command), READ (get current buffer), LIST (show all terminals), \
          KILL (gracefully shutdown). Terminals maintain environment variables, working directory, and shell \
          state across commands. Use different terminal numbers (0, 1, 2...) for parallel work. \
-         Returns 80x24 VTE buffer snapshots - actual rendered terminal output, not raw bytes. \
+         Returns 120x200 VTE buffer snapshots - actual rendered terminal output, not raw bytes. \
          Supports background tasks (await_completion_ms=0) and timeout with continuation."
     }
 
@@ -84,6 +84,8 @@ impl Tool for TerminalTool {
     ) -> Result<Vec<Content>, McpError> {
         let connection_id = ctx.connection_id().unwrap_or("default");
         let request_id = ctx.request_id().clone();
+        let request_id_str = format!("{:?}", request_id);
+        let terminal_id = args.terminal;
 
         // Dispatch based on action
         let output = match args.action {
@@ -102,14 +104,14 @@ impl Tool for TerminalTool {
                     .map_err(McpError::Other)?
             }
             TerminalAction::Read => {
-                // Get current 80x24 VTE buffer snapshot without executing
+                // Get current VTE buffer snapshot without executing
                 let terminal = self
                     .registry
                     .find_or_create_terminal(connection_id, args.terminal)
                     .await
                     .map_err(McpError::Other)?;
                 terminal
-                    .read_current_state(args.terminal)
+                    .read_current_state(args.terminal, args.tail)
                     .await
                     .map_err(McpError::Other)?
             }
@@ -126,12 +128,27 @@ impl Tool for TerminalTool {
                     .await
                     .map_err(McpError::Other)?;
                 terminal
-                    .execute_command(request_id, command, args.await_completion_ms)
+                    .execute_command(request_id, command, args.await_completion_ms, args.tail)
                     .await
                     .map_err(McpError::Other)?
             }
         };
 
-        Ok(vec![Content::text(serde_json::to_string(&output)?)])
+        // Content[0]: Plain terminal output (no JSON)
+        let plain_output = Content::text(output.output.clone());
+
+        // Content[1]: Metadata JSON with terminal, connection_id, request_id
+        let metadata = serde_json::json!({
+            "terminal": format!("terminal:{}", output.terminal.unwrap_or(terminal_id)),
+            "connection_id": connection_id,
+            "request_id": request_id_str,
+            "exit_code": output.exit_code,
+            "cwd": output.cwd,
+            "duration_ms": output.duration_ms,
+            "completed": output.completed,
+        });
+        let metadata_content = Content::text(serde_json::to_string(&metadata)?);
+
+        Ok(vec![plain_output, metadata_content])
     }
 }

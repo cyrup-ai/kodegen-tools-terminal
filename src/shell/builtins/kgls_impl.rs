@@ -35,8 +35,9 @@ pub async fn execute_kgls(
         }
     };
 
-    // Create core and run (kgls prints directly to stdout/stderr)
-    let core = kgls::Core::new(flags);
+    // Create core with shell-provided writers (respects FD redirection)
+    let core = kgls::Core::new(flags)
+        .with_writers(context.stdout(), context.stderr());
     let exit_code = core.run(cli.inputs).await;
 
     // Convert kgls::ExitCode to u8 (OK=0, MinorIssue=1, MajorIssue=2)

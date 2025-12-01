@@ -3,22 +3,18 @@
 use crate::pty::terminal::{ExecuteCommand, ShellOutput};
 use crate::shell::BrushShell;
 use brush_core::variables::ShellVariable;
+use rustix_openpty::openpty;
+use rustix_openpty::rustix::termios::Winsize;
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::os::fd::AsRawFd;
+use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 
 /// Handle to control the BrushInteractive thread
 pub struct ShellHandle {
     pub command_tx: mpsc::Sender<ExecuteCommand>,
     pub output_tx: broadcast::Sender<ShellOutput>,
-    pub shutdown_flag: Arc<AtomicBool>,
-}
-
-impl Drop for ShellHandle {
-    fn drop(&mut self) {
-        self.shutdown_flag.store(true, Ordering::Relaxed);
-    }
+    pub pty_reader_join_handle: tokio::task::JoinHandle<()>,
 }
 
 /// BrushInteractive thread implementation
@@ -26,20 +22,133 @@ pub struct BrushInteractiveThread {
     shell: BrushShell,
     command_rx: mpsc::Receiver<ExecuteCommand>,
     output_tx: broadcast::Sender<ShellOutput>,
-    shutdown_flag: Arc<AtomicBool>,
+    current_request_id: Arc<RwLock<rmcp::model::RequestId>>,
 }
 
 impl BrushInteractiveThread {
-    pub fn spawn(shell: BrushShell) -> (ShellHandle, tokio::task::JoinHandle<()>) {
+    pub async fn spawn(cols: u16, rows: u16) -> Result<(ShellHandle, tokio::task::JoinHandle<()>), std::io::Error> {
+        log::debug!("BrushInteractiveThread::spawn() called with cols={}, rows={}", cols, rows);
+        
+        // Create PTY pair with correct terminal dimensions
+        let winsize = Winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,  // Unused but required
+            ws_ypixel: 0,  // Unused but required
+        };
+
+        let pty_result = openpty(None, Some(&winsize))
+            .map_err(|e| std::io::Error::other(format!("Failed to create PTY: {}", e)))?;
+
+        // PTY master - we read from this to get shell output
+        let pty_master = pty_result.controller;  // OwnedFd
+        let pty_slave = pty_result.user;         // OwnedFd
+
+        // Set master to non-blocking for tokio
+        unsafe {
+            let flags = libc::fcntl(pty_master.as_raw_fd(), libc::F_GETFL, 0);
+            libc::fcntl(pty_master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+
+        // Clone PTY slave for stdin, stdout, and stderr
+        let pty_slave_stdin = std::fs::File::from(pty_slave.try_clone()
+            .map_err(|e| std::io::Error::other(format!("Failed to clone PTY slave for stdin: {}", e)))?);
+        let pty_slave_stdout = std::fs::File::from(pty_slave.try_clone()
+            .map_err(|e| std::io::Error::other(format!("Failed to clone PTY slave for stdout: {}", e)))?);
+        let pty_slave_stderr = std::fs::File::from(pty_slave);
+
+        // Wrap in OpenFile for Brush
+        let stdin_openfile = brush_core::openfiles::OpenFile::File(pty_slave_stdin);
+        let stdout_openfile = brush_core::openfiles::OpenFile::File(pty_slave_stdout);
+        let stderr_openfile = brush_core::openfiles::OpenFile::File(pty_slave_stderr);
+
+        // Create shell with PTY slave as stdin/stdout/stderr
+        let shell = BrushShell::with_fds(stdin_openfile, stdout_openfile, stderr_openfile).await?;
+        log::debug!("BrushShell created successfully with PTY");
+
         let (command_tx, command_rx) = mpsc::channel(32);
         let (output_tx, _) = broadcast::channel(1024);
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
+
+        // Create shared request_id tracker (initialized with placeholder)
+        let current_request_id = Arc::new(RwLock::new(rmcp::model::RequestId::Number(0)));
+
+        // Spawn async PTY reader task
+        let output_tx_reader = output_tx.clone();
+        let mut shutdown_rx = output_tx.subscribe();
+        let current_request_id_reader = current_request_id.clone();
+        let pty_master_file = std::fs::File::from(pty_master);
+        let pty_async = tokio::io::unix::AsyncFd::new(pty_master_file)
+            .map_err(|e| std::io::Error::other(format!("Failed to create AsyncFd: {}", e)))?;
+        
+        let pty_reader_join_handle = tokio::spawn(async move {
+            log::debug!("PTY reader task started");
+            let mut buffer = [0u8; 4096];
+            
+            loop {
+                tokio::select! {
+                    // Check for shutdown event
+                    result = shutdown_rx.recv() => {
+                        match result {
+                            Ok(ShellOutput::Shutdown) => {
+                                log::debug!("PTY reader: received Shutdown event");
+                                break;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                log::debug!("PTY reader: channel closed");
+                                break;
+                            }
+                            _ => continue, // Ignore other events
+                        }
+                    }
+                    // Read from PTY master
+                    result = pty_async.readable() => {
+                        match result {
+                            Ok(mut guard) => {
+                                match guard.try_io(|inner| inner.get_ref().read(&mut buffer)) {
+                                    Ok(Ok(0)) => {
+                                        log::debug!("PTY reader: EOF");
+                                        break;
+                                    }
+                                    Ok(Ok(n)) => {
+                                        log::debug!("PTY reader: read {} bytes", n);
+                                        let request_id = match current_request_id_reader.read() {
+                                            Ok(g) => g.clone(),
+                                            Err(e) => {
+                                                log::error!("PTY reader: Failed to read current_request_id (poisoned): {}", e);
+                                                rmcp::model::RequestId::Number(0)
+                                            }
+                                        };
+                                        let _ = output_tx_reader.send(ShellOutput::Bytes {
+                                            request_id,
+                                            data: buffer[..n].to_vec(),
+                                        });
+                                    }
+                                    Ok(Err(e)) => {
+                                        log::error!("PTY reader error: {}", e);
+                                        break;
+                                    }
+                                    Err(_would_block) => {
+                                        // Spurious wakeup, continue
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("PTY reader: readable error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            log::debug!("PTY reader task exiting");
+        });
 
         let thread_impl = Self {
             shell,
             command_rx,
             output_tx: output_tx.clone(),
-            shutdown_flag: shutdown_flag.clone(),
+            current_request_id,
         };
 
         let join_handle = tokio::spawn(async move {
@@ -49,17 +158,16 @@ impl BrushInteractiveThread {
         let shell_handle = ShellHandle {
             command_tx,
             output_tx,
-            shutdown_flag,
+            pty_reader_join_handle,
         };
 
-        (shell_handle, join_handle)
+        Ok((shell_handle, join_handle))
     }
 
     async fn run(mut self) {
         log::debug!("BrushInteractive task starting");
 
-        while !self.shutdown_flag.load(Ordering::Relaxed) {
-            // Use async recv instead of polling
+        loop {
             match self.command_rx.recv().await {
                 Some(ExecuteCommand::Run {
                     request_id,
@@ -67,13 +175,17 @@ impl BrushInteractiveThread {
                 }) => {
                     self.execute_command(request_id, command).await;
                 }
+                Some(ExecuteCommand::Shutdown) => {
+                    log::debug!("BrushInteractive: received Shutdown command, exiting");
+                    break;
+                }
                 None => {
                     log::debug!("BrushInteractive: channel closed, exiting");
                     break;
                 }
             }
         }
-        log::debug!("BrushInteractive task stopping");
+        log::debug!("BrushInteractive task exited cleanly");
     }
 
     async fn execute_command(
@@ -83,91 +195,21 @@ impl BrushInteractiveThread {
     ) {
         log::debug!("execute_command: request_id={:?}, command={}", request_id, command);
 
-        // Create per-command pipes for stdout and stderr (using std::io::pipe like brush)
-        let (mut stdout_reader, stdout_writer) = match std::io::pipe() {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to create stdout pipe: {}", e);
-                return;
-            }
-        };
+        // Update current request_id for PTY reader task
+        if let Ok(mut guard) = self.current_request_id.write() {
+            *guard = request_id.clone();
+        } else {
+            log::error!("Failed to acquire write lock on current_request_id - RwLock poisoned");
+            // Still execute command, reader will use stale request_id
+        }
 
-        let (mut stderr_reader, stderr_writer) = match std::io::pipe() {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to create stderr pipe: {}", e);
-                return;
-            }
-        };
+        // Get default execution params (uses PTY slave FDs from shell)
+        let params = self.shell.shell().default_exec_params();
 
-        log::debug!("Created pipes");
+        log::debug!("Executing command: {}", command);
 
-        // Spawn tokio tasks to read pipes and broadcast output
-        let output_tx_stdout = self.output_tx.clone();
-        let request_id_stdout = request_id.clone();
-        let _stdout_task = tokio::task::spawn_blocking(move || {
-            let mut buffer = [0u8; 4096];
-            loop {
-                match stdout_reader.read(&mut buffer) {
-                    Ok(0) => {
-                        log::debug!("stdout reader: EOF");
-                        break;
-                    }
-                    Ok(n) => {
-                        log::debug!("stdout reader: read {} bytes", n);
-                        let _ = output_tx_stdout.send(ShellOutput::Bytes {
-                            request_id: request_id_stdout.clone(),
-                            data: buffer[..n].to_vec(),
-                        });
-                    }
-                    Err(e) => {
-                        log::error!("stdout reader error: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
-
-        let output_tx_stderr = self.output_tx.clone();
-        let request_id_stderr = request_id.clone();
-        let _stderr_task = tokio::task::spawn_blocking(move || {
-            let mut buffer = [0u8; 4096];
-            loop {
-                match stderr_reader.read(&mut buffer) {
-                    Ok(0) => {
-                        log::debug!("stderr reader: EOF");
-                        break;
-                    }
-                    Ok(n) => {
-                        log::debug!("stderr reader: read {} bytes", n);
-                        let _ = output_tx_stderr.send(ShellOutput::Bytes {
-                            request_id: request_id_stderr.clone(),
-                            data: buffer[..n].to_vec(),
-                        });
-                    }
-                    Err(e) => {
-                        log::error!("stderr reader error: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
-
-        log::debug!("Spawned pipe reader tasks");
-
-        // Execute on persistent shell (don't clone - state must persist across commands)
-        let mut params = self.shell.shell().default_exec_params();
-
-        // Put writers into params
-        params.set_fd(brush_core::openfiles::OpenFiles::STDOUT_FD, stdout_writer.into());
-        params.set_fd(brush_core::openfiles::OpenFiles::STDERR_FD, stderr_writer.into());
-
-        let cmd = command.clone();
-
-        log::debug!("About to execute: {}", command);
-
-        // Execute command directly (we're already in an async context)
-        let result = match self.shell.shell_mut().run_string(&cmd, &params).await {
+        // Execute command on persistent shell (writes to PTY slave)
+        let result = match self.shell.shell_mut().run_string(&command, &params).await {
             Ok(exec_result) => exec_result,
             Err(e) => {
                 log::error!("Command execution failed: {}", e);
@@ -175,38 +217,42 @@ impl BrushInteractiveThread {
             }
         };
 
-        log::debug!("Command execution completed");
+        log::debug!("Command completed");
 
         let exit_code = result.exit_code.into();
 
-        // Get current working directory after command execution
+        // Get current working directory from shell
         let current_cwd = self.shell.shell().working_dir().to_path_buf();
 
-        // Generate beautiful prompt for next command using actual exit code
+        // Update PS1 prompt
         let prompt = prmt::execute(
             "{path:#89dceb} {git:#f9e2af} {ok:#a6e3a1}{fail:#f38ba8} ",
-            false,                      // no_version=false: enable rust/node/python version detection
-            Some(exit_code as i32),     // Use actual exit code from command we just executed
-            false,                      // no_color=false: enable colors (prmt handles NO_COLOR env + terminal detection)
-        ).unwrap_or("$ ".to_string());
+            false,
+            Some(exit_code as i32),
+            false,
+        ).unwrap_or_else(|_| "$ ".to_string());
 
-        // Update PS1 for next prompt display
         let _ = self.shell.shell_mut().env.set_global("PS1", ShellVariable::new(&prompt));
 
-        log::debug!("Sending completion event, exit_code={}", exit_code);
-
-        // Send completion event with CWD immediately
-        match self.output_tx.send(ShellOutput::ExecComplete {
-            request_id: request_id.clone(),
-            exit_code,
-            cwd: current_cwd.clone(),
-        }) {
-            Ok(n) => log::debug!("ExecComplete event sent to {} receivers", n),
-            Err(e) => log::error!("Failed to send ExecComplete event: {}", e),
+        // Print the prompt to the terminal so it appears in the buffer
+        {
+            use std::io::Write;
+            let shell = self.shell.shell();
+            let mut stdout = shell.default_exec_params().stdout(shell);
+            let _ = stdout.write_all(prompt.as_bytes());
+            let _ = stdout.flush();
         }
 
-        // Note: stdout_task and stderr_task continue running for the lifetime of the shell
-        // They're not per-command, they're per-shell session
+        // Give PTY reader time to read the prompt bytes before we signal completion
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
+        // Send completion event
+        let _ = self.output_tx.send(ShellOutput::ExecComplete {
+            request_id,
+            exit_code,
+            cwd: current_cwd,
+        });
+
+        log::debug!("Command execution completed");
     }
 }
