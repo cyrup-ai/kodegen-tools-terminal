@@ -84,7 +84,7 @@ impl Tool for TerminalTool {
     ) -> Result<Vec<Content>, McpError> {
         let connection_id = ctx.connection_id().unwrap_or("default");
         let request_id = ctx.request_id().clone();
-        let request_id_str = format!("{:?}", request_id);
+        let request_id_str = request_id.to_string();
         let terminal_id = args.terminal;
 
         // Dispatch based on action
