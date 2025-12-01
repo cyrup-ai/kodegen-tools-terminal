@@ -9,7 +9,7 @@
 
 High-performance terminal management library and MCP (Model Context Protocol) server for code generation agents. Part of the [KODEGEN.ᴀɪ](https://kodegen.ai) ecosystem.
 
-## Features
+## Features 
 
 - 🖥️ **PTY-based Terminal Sessions** - Full pseudo-terminal support with VT100 emulation
 - 🎨 **Interactive Command Support** - Run REPLs, editors (vim, nano), and TUI apps (top, htop)
