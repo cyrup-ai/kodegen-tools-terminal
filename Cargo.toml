@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.5.5"
+version = "0.5.6"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -35,7 +35,7 @@ kodegen_server_http = { version = "0.5" }
 kgls = { version = "0.5" }
 
 # MCP SDK - for Tool implementation
-rmcp = { version = "0.9", features = ["client", "schemars", "server"] }
+rmcp = { version = "0.10", features = ["client", "schemars", "server"] }
 
 # Async runtime - for process management, IO, sync primitives
 tokio = { version = "1", features = ["full"] }
