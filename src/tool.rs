@@ -47,8 +47,8 @@ impl Tool for TerminalTool {
     fn description() -> &'static str {
         "Execute shell commands in persistent, stateful terminal sessions with multiplatform support. \
          Supports 4 actions: EXEC (execute command), READ (get current buffer), LIST (show all terminals), \
-         KILL (gracefully shutdown). Terminals maintain environment variables, working directory, and shell \
-         state across commands. Use different terminal numbers (0, 1, 2...) for parallel work. \
+         KILL (gracefully shutdown). Terminals maintain environment variables, working directory, and \
+         shell state across commands. Use different terminal numbers (0, 1, 2...) for parallel work. \
          Returns 120x200 VTE buffer snapshots - actual rendered terminal output, not raw bytes. \
          Supports background tasks (await_completion_ms=0) and timeout with continuation."
     }
@@ -82,6 +82,7 @@ impl Tool for TerminalTool {
         args: Self::Args,
         ctx: ToolExecutionContext,
     ) -> Result<Vec<Content>, McpError> {
+        let start = std::time::Instant::now();
         let connection_id = ctx.connection_id().unwrap_or("default");
         let request_id = ctx.request_id().clone();
         let request_id_str = request_id.to_string();
@@ -144,7 +145,7 @@ impl Tool for TerminalTool {
             "request_id": request_id_str,
             "exit_code": output.exit_code,
             "cwd": output.cwd,
-            "duration_ms": output.duration_ms,
+            "duration_ms": start.elapsed().as_millis() as u64,
             "completed": output.completed,
         });
         let metadata_content = Content::text(serde_json::to_string(&metadata)?);

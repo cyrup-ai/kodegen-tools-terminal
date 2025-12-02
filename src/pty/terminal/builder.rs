@@ -112,11 +112,11 @@ impl TerminalBuilder {
             scrollback: self.scrollback,
         };
 
-        // Spawn BrushExecutor thread (creates shell internally with PTY configured)
-        let (brush_handle, brush_join_handle) = crate::shell::BrushInteractiveThread::spawn(cols, rows).await?;
+        // Spawn KodegenInteractive thread (creates shell with streaming + cancellation)
+        let (shell_handle, shell_join_handle) = crate::shell::KodegenInteractiveThread::spawn(cols, rows).await?;
 
         // Subscribe to shell output for VTE processing
-        let shell_output_rx = brush_handle.output_tx.subscribe();
+        let shell_output_rx = shell_handle.output_tx.subscribe();
 
         // Get initial CWD for VteProcessor
         let initial_cwd = self.cwd
@@ -141,13 +141,13 @@ impl TerminalBuilder {
         // CommandManager provides parsing utilities only (validation is done by ValidationEngine)
         let command_manager = crate::validation::CommandManager::new();
 
-        log::info!("Terminal initialized with THREE-THREAD architecture (BrushExecutor + VteProcessor + TerminalManager)");
+        log::info!("Terminal initialized with streaming + cancellation architecture (KodegenShell + VteProcessor)");
         log::info!("ValidationEngine initialized with default security rules");
 
         Ok(Terminal {
             terminal_id: self.terminal_id.unwrap_or(0),
-            brush_handle: Some(brush_handle),
-            brush_join_handle: Some(brush_join_handle),
+            shell_handle: Some(shell_handle),
+            shell_join_handle: Some(shell_join_handle),
             vte_handle: Some(vte_handle),
             vte_join_handle: Some(vte_join_handle),
             buffer_rx: tokio::sync::Mutex::new(buffer_rx),

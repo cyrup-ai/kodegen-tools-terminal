@@ -28,6 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     demo_list_action(&registry).await?;
     log::info!("\n{}\n", "=".repeat(80));
 
+    // Demo 5: lsd --tree command
+    demo_lsd_tree(&registry).await?;
+    log::info!("\n{}\n", "=".repeat(80));
+
     log::info!("\n=== ALL ACTIONS DEMONSTRATED SUCCESSFULLY ===");
     log::info!("\n💀 CLEANUP: Killing all terminals\n");
 
@@ -55,8 +59,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output1 = registry.kill_terminal("demo-connection", 1).await?;
     log::info!("   ✅ Terminal 1 killed: exit_code={:?}, duration={}ms", output1.exit_code, output1.duration_ms);
 
-    // List after killing terminal 1
-    log::info!("\n📋 After killing terminal 1 - LIST:");
+    // Kill terminal 2
+    log::info!("\n💀 Killing terminal 2...");
+    let output2 = registry.kill_terminal("demo-connection", 2).await?;
+    log::info!("   ✅ Terminal 2 killed: exit_code={:?}, duration={}ms", output2.exit_code, output2.duration_ms);
+
+    // List after killing all terminals
+    log::info!("\n📋 After killing all terminals - LIST:");
     let list_after = registry.list_all_terminals("demo-connection").await?;
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&list_after.output) {
         log::info!("{}", serde_json::to_string_pretty(&parsed)?);
@@ -161,6 +170,34 @@ async fn demo_list_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&output.output) {
         log::info!("{}", serde_json::to_string_pretty(&parsed)?);
     }
+
+    Ok(())
+}
+
+/// Demo 5: lsd --tree command
+async fn demo_lsd_tree(registry: &TerminalRegistry) -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("🌳 DEMO 5: lsd --tree ./src/");
+    log::info!("   - Testing tree output with lsd");
+    log::info!("   - Terminal: 2");
+
+    let terminal = registry.find_or_create_terminal("demo-connection", 2).await?;
+    let request_id = rmcp::model::RequestId::String("exec-lsd-tree".to_string().into());
+
+    log::info!("\n   Executing: cd /Volumes/samsung_t9/kodegen-workspace/packages/kodegen-native-notify && lsd --tree ./src/");
+    let output = terminal.execute_command(
+        request_id,
+        "cd /Volumes/samsung_t9/kodegen-workspace/packages/kodegen-native-notify && lsd --tree ./src/".to_string(),
+        30_000, // 30 second timeout
+        2000,   // tail: return last 2000 lines
+    ).await?;
+
+    log::info!("   ✅ Command completed:");
+    log::info!("      Terminal: {:?}", output.terminal);
+    log::info!("      Exit code: {:?}", output.exit_code);
+    log::info!("      CWD: {}", output.cwd);
+    log::info!("      Duration: {}ms", output.duration_ms);
+    log::info!("      Completed: {}", output.completed);
+    log::info!("      Output:\n{}", output.output);
 
     Ok(())
 }

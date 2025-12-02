@@ -1,25 +1,23 @@
-use brush_core::Shell as BrushCoreShell;
-use brush_core::builtins::builtin;
+use kodegen_bash_shell::{Shell, builtin, openfiles, default_builtins, BuiltinSet};
 use std::io;
 
-use super::builtins::{SedCommand, LsCommand, LsdCommand, FindCommand, GrepCommand, MvCommand, ChmodCommand, ChownCommand, LnCommand, KillCommand, KillallCommand, PkillCommand};
+use super::builtins::{SedCommand, LsCommand, LsdCommand, FindCommand, MvCommand, ChmodCommand, ChownCommand, LnCommand, KillCommand, KillallCommand, PkillCommand};
 
 #[derive(Clone)]
-pub struct BrushShell {
-    shell: BrushCoreShell,
+pub struct KodegenShell {
+    shell: Shell,
 }
 
-impl BrushShell {
+impl KodegenShell {
     pub async fn new() -> io::Result<Self> {
         // Get default builtins
-        let mut builtins = brush_builtins::default_builtins(brush_builtins::BuiltinSet::BashMode);
+        let mut builtins = default_builtins(BuiltinSet::BashMode);
 
         // Override sed to redirect to kodegen filesystem tools
         builtins.insert("sed".to_string(), builtin::<SedCommand>());
 
-        // Override find, grep, mv to redirect to kodegen filesystem tools
+        // Override find, mv to redirect to kodegen filesystem tools
         builtins.insert("find".to_string(), builtin::<FindCommand>());
-        builtins.insert("grep".to_string(), builtin::<GrepCommand>());
         builtins.insert("mv".to_string(), builtin::<MvCommand>());
 
         // Override chmod, chown, ln - educational builtins (no MCP replacements)
@@ -36,40 +34,39 @@ impl BrushShell {
         builtins.insert("ls".to_string(), builtin::<LsCommand>());
         builtins.insert("lsd".to_string(), builtin::<LsdCommand>());
 
-        let shell = BrushCoreShell::builder()
+        let shell = Shell::builder()
             .interactive(true)
             .builtins(builtins)
             .build()
             .await
-            .map_err(|e| io::Error::other(format!("Failed to create brush shell: {}", e)))?;
+            .map_err(|e| io::Error::other(format!("Failed to create shell: {}", e)))?;
 
         Ok(Self { shell })
     }
 
     /// Create shell with custom stdin/stdout/stderr file descriptors
     pub async fn with_fds(
-        stdin: brush_core::openfiles::OpenFile,
-        stdout: brush_core::openfiles::OpenFile,
-        stderr: brush_core::openfiles::OpenFile,
+        stdin: openfiles::OpenFile,
+        stdout: openfiles::OpenFile,
+        stderr: openfiles::OpenFile,
     ) -> io::Result<Self> {
         use std::collections::HashMap;
 
         // Set custom FDs for stdin (0), stdout (1) and stderr (2)
         let fds: HashMap<_, _> = [
-            (brush_core::openfiles::OpenFiles::STDIN_FD, stdin),
-            (brush_core::openfiles::OpenFiles::STDOUT_FD, stdout),
-            (brush_core::openfiles::OpenFiles::STDERR_FD, stderr),
+            (openfiles::OpenFiles::STDIN_FD, stdin),
+            (openfiles::OpenFiles::STDOUT_FD, stdout),
+            (openfiles::OpenFiles::STDERR_FD, stderr),
         ].into_iter().collect();
 
         // Get default builtins
-        let mut builtins = brush_builtins::default_builtins(brush_builtins::BuiltinSet::BashMode);
+        let mut builtins = default_builtins(BuiltinSet::BashMode);
 
         // Override sed to redirect to kodegen filesystem tools
         builtins.insert("sed".to_string(), builtin::<SedCommand>());
 
-        // Override find, grep, mv to redirect to kodegen filesystem tools
+        // Override find, mv to redirect to kodegen filesystem tools
         builtins.insert("find".to_string(), builtin::<FindCommand>());
-        builtins.insert("grep".to_string(), builtin::<GrepCommand>());
         builtins.insert("mv".to_string(), builtin::<MvCommand>());
 
         // Override chmod, chown, ln - educational builtins (no MCP replacements)
@@ -86,24 +83,24 @@ impl BrushShell {
         builtins.insert("ls".to_string(), builtin::<LsCommand>());
         builtins.insert("lsd".to_string(), builtin::<LsdCommand>());
 
-        let shell = BrushCoreShell::builder()
+        let shell = Shell::builder()
             .interactive(true)
             .builtins(builtins)
             .fds(fds)
             .build()
             .await
-            .map_err(|e| io::Error::other(format!("Failed to create brush shell: {}", e)))?;
+            .map_err(|e| io::Error::other(format!("Failed to create shell: {}", e)))?;
 
         Ok(Self { shell })
     }
 
     /// Get mutable reference to shell for command execution
-    pub fn shell_mut(&mut self) -> &mut BrushCoreShell {
+    pub fn shell_mut(&mut self) -> &mut Shell {
         &mut self.shell
     }
 
     /// Get reference to shell for state inspection
-    pub fn shell(&self) -> &BrushCoreShell {
+    pub fn shell(&self) -> &Shell {
         &self.shell
     }
 }

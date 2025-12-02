@@ -7,18 +7,18 @@ use crate::validation::ValidationDecision;
 
 /// Represents a virtual terminal component
 /// Terminal emulator using three-thread architecture:
-/// - BrushExecutor: Executes commands, emits ShellOutput events
+/// - KodegenInteractiveThread: Executes commands, emits ShellOutput events
 /// - VteProcessor: Processes VTE sequences, maintains terminal grid, emits TerminalBuffer events
 /// - TerminalManager: API layer (subscribes to TerminalBuffer events)
 pub struct Terminal {
     /// Terminal ID for this instance
     pub(super) terminal_id: u32,
 
-    /// Handle to BrushExecutor thread (drop = shutdown)
-    pub(super) brush_handle: Option<crate::shell::ShellHandle>,
+    /// Handle to KodegenShell thread (drop = shutdown)
+    pub(super) shell_handle: Option<crate::shell::ShellHandle>,
 
-    /// JoinHandle for BrushExecutor thread
-    pub(super) brush_join_handle: Option<tokio::task::JoinHandle<()>>,
+    /// JoinHandle for KodegenShell thread
+    pub(super) shell_join_handle: Option<tokio::task::JoinHandle<()>>,
 
     /// Handle to VteProcessor thread (drop = shutdown)
     pub(super) vte_handle: Option<super::vte_processor::VteHandle>,
@@ -54,6 +54,23 @@ impl Terminal {
     #[must_use]
     pub fn subscribe_buffer(&self) -> Option<broadcast::Receiver<super::TerminalBuffer>> {
         self.vte_handle.as_ref().map(|h| h.buffer_tx.subscribe())
+    }
+
+    /// Send cancel signal to stop any currently running command
+    ///
+    /// Sends cancel signal via channel to KodegenInteractiveThread, which then
+    /// cancels the CancellationToken to cleanly stop execution.
+    ///
+    /// This is safe to call even if no command is running.
+    pub async fn send_cancel(&self) -> Result<(), anyhow::Error> {
+        let shell_handle = self.shell_handle.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
+
+        shell_handle.cancel_tx.send(()).await
+            .map_err(|e| anyhow::anyhow!("Failed to send cancel signal: {}", e))?;
+
+        log::info!("Sent cancel signal to KodegenInteractiveThread");
+        Ok(())
     }
 
     /// Execute a command and return output (high-level API)
@@ -120,15 +137,23 @@ impl Terminal {
             }
         }
 
+        // Get shell handle first (needed for cancel channel and command channel)
+        let shell_handle = self.shell_handle.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
+
+        // Send cancel signal via channel to clear any potentially stuck command
+        // The KodegenInteractiveThread will cancel the CancellationToken
+        if let Err(e) = shell_handle.cancel_tx.send(()).await {
+            log::warn!("Failed to send pre-execution cancel signal: {}", e);
+            // Continue anyway - channel may be full or closed
+        }
+
         // Subscribe to buffer events (creates new receiver from broadcast sender)
         let mut buffer_rx = self.subscribe_buffer()
             .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
 
-        let brush_handle = self.brush_handle.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
-
-        // Send command to BrushExecutor
-        brush_handle.command_tx.send(super::ExecuteCommand::Run {
+        // Send command to KodegenShell executor
+        shell_handle.command_tx.send(super::ExecuteCommand::Run {
             request_id: request_id.clone(),
             command: command.clone(),
         }).await?;
@@ -252,58 +277,39 @@ impl Terminal {
     ///
     /// This MUST be called before Terminal is dropped to ensure clean shutdown.
     /// Shutdown order:
-    /// 1. Send Shutdown to BrushInteractive, await its exit (drops BrushShell, closes PTY slave)
-    /// 2. Await PTY reader (gets EOF from PTY master when slave closes)
-    /// 3. Send Shutdown to VteProcessor, await its exit
+    /// 1. Send Shutdown to KodegenInteractive, await its exit
+    /// 2. Send Shutdown to VteProcessor, await its exit
     pub async fn shutdown(mut self) {
         log::debug!("Terminal {} shutting down", self.terminal_id);
 
-        // Take brush_handle to get pty_reader_join_handle
-        let brush_handle = self.brush_handle.take();
+        // Take shell_handle
+        let shell_handle = self.shell_handle.take();
 
-        // Send shutdown to BrushInteractive thread
-        if let Some(ref handle) = brush_handle {
+        // Send shutdown to KodegenInteractive thread
+        if let Some(ref handle) = shell_handle {
             let _ = handle.command_tx.send(crate::pty::terminal::ExecuteCommand::Shutdown).await;
         }
 
-        // Await BrushInteractive - this drops BrushShell which closes PTY slave
-        if let Some(handle) = self.brush_join_handle.take() {
+        // Await KodegenInteractive
+        if let Some(handle) = self.shell_join_handle.take() {
             tokio::pin!(handle);
             tokio::select! {
                 result = &mut handle => {
                     match result {
-                        Ok(()) => log::debug!("BrushInteractiveThread exited cleanly"),
-                        Err(e) => log::error!("BrushInteractiveThread panicked: {}", e),
+                        Ok(()) => log::debug!("KodegenInteractiveThread exited cleanly"),
+                        Err(e) => log::error!("KodegenInteractiveThread panicked: {}", e),
                     }
                 }
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
-                    log::warn!("BrushInteractiveThread timeout after 2s, aborting task");
+                    log::warn!("KodegenInteractiveThread timeout after 2s, aborting task");
                     handle.abort();
                 }
             }
         }
 
-        // Send Shutdown to PTY reader (it subscribes to output_tx)
-        if let Some(ref handle) = brush_handle {
+        // Send Shutdown to VteProcessor (it subscribes to output_tx)
+        if let Some(ref handle) = shell_handle {
             let _ = handle.output_tx.send(crate::pty::terminal::ShellOutput::Shutdown);
-        }
-
-        // Await PTY reader
-        if let Some(handle) = brush_handle {
-            let pty_handle = handle.pty_reader_join_handle;
-            tokio::pin!(pty_handle);
-            tokio::select! {
-                result = &mut pty_handle => {
-                    match result {
-                        Ok(()) => log::debug!("PTY reader task exited cleanly"),
-                        Err(e) => log::error!("PTY reader task panicked: {}", e),
-                    }
-                }
-                _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
-                    log::warn!("PTY reader task timeout after 2s, aborting task");
-                    pty_handle.abort();
-                }
-            }
         }
 
         // Drop vte_handle (VteProcessor will exit when shell_output_rx channel closes)

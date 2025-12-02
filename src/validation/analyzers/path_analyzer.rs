@@ -13,19 +13,21 @@ use std::path::Path;
 /// modified by agents. Any command attempting to access these paths
 /// will be blocked.
 const RESTRICTED_PATHS: &[&str] = &[
-    "/etc",      // System configuration
-    "/sys",      // Kernel interface
-    "/proc",     // Process information
-    "/boot",     // Boot loader and kernel
-    "/dev",      // Device files
-    "/root",     // Root user home
-    "/usr/bin",  // System binaries
-    "/usr/sbin", // System admin binaries
-    "/bin",      // Essential binaries
-    "/sbin",     // System binaries
-    "/var/lib",  // System state data
-    "/lib",      // System libraries
-    "/lib64",    // 64-bit system libraries
+    "/etc",         // System configuration
+    "/private/etc", // macOS: /etc symlinks here
+    "/sys",         // Kernel interface
+    "/proc",        // Process information
+    "/boot",        // Boot loader and kernel
+    "/dev",         // Device files
+    "/root",        // Root user home
+    "/usr/bin",     // System binaries
+    "/usr/sbin",    // System admin binaries
+    "/bin",         // Essential binaries
+    "/sbin",        // System binaries
+    "/var/lib",     // System state data
+    "/private/var", // macOS: /var symlinks here
+    "/lib",         // System libraries
+    "/lib64",       // 64-bit system libraries
 ];
 
 /// Paths that are explicitly allowed

@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -70,10 +70,12 @@ anyhow = "1"
 alacritty_terminal = "0.25"
 vte = "0.15"                # MUST match alacritty_terminal's vte version exactly
 
-# Brush shell - for in-process POSIX/bash shell execution
-brush-core = "0.4"
-brush-builtins = "0.1"
+# kodegen-bash-shell - fork of brush-shell with cancellation and streaming support
+kodegen_bash_shell = { version = "0.5" }
 clap = { version = "4", features = ["derive"] }
+
+# Async stream processing - for StreamExt trait
+futures = "0.3"
 
 # Prompt generator - for beautiful terminal prompts with git status
 prmt = "0.1"
@@ -83,11 +85,9 @@ bytes = "1"
 parking_lot = "0.12.5"
 polling = "3.11"
 
-# Platform-specific PTY support (Unix)
+# Platform-specific dependencies (Unix)
 [target.'cfg(unix)'.dependencies]
-rustix-openpty = "0.2.0"    # Modern PTY creation API
-rustix = { version = "1.1.2", default-features = false, features = ["std"] }
-signal-hook = "0.3.18"      # For SIGCHLD handling
+# libc kept for potential future use
 libc = "0.2"
 
 # Platform-specific PTY support (Windows)

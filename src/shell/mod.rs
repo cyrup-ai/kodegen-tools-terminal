@@ -1,7 +1,7 @@
-pub mod brush_shell;
-pub use brush_shell::BrushShell;
+pub mod kodegen_shell;
+pub use kodegen_shell::KodegenShell;
 
 pub mod interactive;
-pub use interactive::{ShellHandle, BrushInteractiveThread};
+pub use interactive::{ShellHandle, KodegenInteractiveThread};
 
 mod builtins;

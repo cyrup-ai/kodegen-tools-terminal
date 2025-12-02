@@ -15,9 +15,9 @@
 //! **Simpler mental model**: Focus on file content and organization rather than ownership
 //! bits. When agents create files via MCP tools, they're automatically owned correctly.
 
-use brush_core::builtins::Command;
-use brush_core::commands::ExecutionContext;
-use brush_core::{ExecutionResult, Error};
+use kodegen_bash_shell::builtins::Command;
+use kodegen_bash_shell::ExecutionContext;
+use kodegen_bash_shell::{ExecutionResult, Error};
 use clap::Parser;
 use std::io::Write;
 
