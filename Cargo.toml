@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.5.7"
+version = "0.6.0"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -28,11 +28,11 @@ macos = "public.app-category.developer-tools"
 
 
 [dependencies]
-kodegen_mcp_schema = { version = "0.5" }
-kodegen_mcp_tool = { version = "0.5" }
-kodegen_config_manager = { version = "0.5" }
-kodegen_server_http = { version = "0.5" }
-kgls = { version = "0.5" }
+kodegen_mcp_schema = { version = "0.6" }
+kodegen_mcp_tool = { version = "0.6" }
+kodegen_config_manager = { version = "0.6" }
+kodegen_server_http = { version = "0.6" }
+kgls = { version = "0.6" }
 
 # MCP SDK - for Tool implementation
 rmcp = { version = "0.10", features = ["client", "schemars", "server"] }
@@ -71,7 +71,7 @@ alacritty_terminal = "0.25"
 vte = "0.15"                # MUST match alacritty_terminal's vte version exactly
 
 # kodegen-bash-shell - fork of brush-shell with cancellation and streaming support
-kodegen_bash_shell = { version = "0.5" }
+kodegen_bash_shell = { version = "0.6" }
 clap = { version = "4", features = ["derive"] }
 
 # Async stream processing - for StreamExt trait
