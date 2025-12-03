@@ -51,8 +51,10 @@ async fn test_pipe_grep(registry: &TerminalRegistry) -> Result<(), Box<dyn std::
     let output = terminal.execute_command(
         request_id,
         command.to_string(),
+        true,   // clear
         30_000, // 30 second timeout
         2000,
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   Result:");
@@ -85,8 +87,10 @@ async fn test_complex_pipe_grep(registry: &TerminalRegistry) -> Result<(), Box<d
     let output = terminal.execute_command(
         request_id,
         command.to_string(),
+        true,   // clear
         30_000, // 30 second timeout
         2000,
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   Result:");

@@ -6,8 +6,8 @@
 //! - **VteProcessor**: Processes VTE sequences, maintains terminal grid, emits TerminalBuffer events
 //! - **TerminalManager**: API layer (subscribes to TerminalBuffer events)
 
-mod types;
-pub use types::{KeyCode, TermSize, Terminal, TerminalConfig};
+pub mod types;
+pub use types::{KeyCode, TermSize, Terminal, TerminalConfig, TerminalCommandResult};
 
 mod events;
 pub use events::{ShellOutput, TerminalBuffer, ExecuteCommand};

@@ -1,10 +1,9 @@
 //! Terminal tool implementation
 
 use crate::TerminalRegistry;
-use kodegen_mcp_schema::terminal::{TERMINAL, TerminalAction, TerminalInput};
+use kodegen_mcp_schema::terminal::{TERMINAL, TerminalAction, TerminalInput, TerminalOutput};
 use kodegen_mcp_tool::error::McpError;
-use kodegen_mcp_tool::{Tool, ToolExecutionContext};
-use rmcp::model::Content;
+use kodegen_mcp_tool::{Tool, ToolExecutionContext, ToolResponse};
 use std::sync::Arc;
 
 /// Terminal tool - executes commands in persistent terminal sessions
@@ -81,11 +80,10 @@ impl Tool for TerminalTool {
         &self,
         args: Self::Args,
         ctx: ToolExecutionContext,
-    ) -> Result<Vec<Content>, McpError> {
+    ) -> Result<ToolResponse<TerminalOutput>, McpError> {
         let start = std::time::Instant::now();
         let connection_id = ctx.connection_id().unwrap_or("default");
         let request_id = ctx.request_id().clone();
-        let request_id_str = request_id.to_string();
         let terminal_id = args.terminal;
 
         // Dispatch based on action
@@ -106,9 +104,10 @@ impl Tool for TerminalTool {
             }
             TerminalAction::Read => {
                 // Get current VTE buffer snapshot without executing
+                let pwd = ctx.pwd().and_then(|p| p.to_str().map(String::from));
                 let terminal = self
                     .registry
-                    .find_or_create_terminal(connection_id, args.terminal)
+                    .find_or_create_terminal(connection_id, args.terminal, pwd)
                     .await
                     .map_err(McpError::Other)?;
                 terminal
@@ -123,33 +122,30 @@ impl Tool for TerminalTool {
                         "command field is required for EXEC action"
                     ))
                 })?;
+                let pwd = ctx.pwd().and_then(|p| p.to_str().map(String::from));
                 let terminal = self
                     .registry
-                    .find_or_create_terminal(connection_id, args.terminal)
+                    .find_or_create_terminal(connection_id, args.terminal, pwd)
                     .await
                     .map_err(McpError::Other)?;
                 terminal
-                    .execute_command(request_id, command, args.await_completion_ms, args.tail)
+                    .execute_command(request_id, command, args.clear, args.await_completion_ms, args.tail, Some(ctx))
                     .await
                     .map_err(McpError::Other)?
             }
         };
 
-        // Content[0]: Plain terminal output (no JSON)
-        let plain_output = Content::text(output.output.clone());
-
-        // Content[1]: Metadata JSON with terminal, connection_id, request_id
-        let metadata = serde_json::json!({
-            "terminal": format!("terminal:{}", output.terminal.unwrap_or(terminal_id)),
-            "connection_id": connection_id,
-            "request_id": request_id_str,
-            "exit_code": output.exit_code,
-            "cwd": output.cwd,
-            "duration_ms": start.elapsed().as_millis() as u64,
-            "completed": output.completed,
-        });
-        let metadata_content = Content::text(serde_json::to_string(&metadata)?);
-
-        Ok(vec![plain_output, metadata_content])
+        // Return typed response with display (terminal output) and metadata (TerminalOutput struct)
+        // Terminal output is ONLY in the display field (Vec[Content]0), not duplicated in typed output
+        Ok(ToolResponse::new(
+            output.output,
+            TerminalOutput {
+                terminal: output.terminal.or(Some(terminal_id)),
+                exit_code: output.exit_code,
+                cwd: output.cwd,
+                duration_ms: start.elapsed().as_millis() as u64,
+                completed: output.completed,
+            },
+        ))
     }
 }

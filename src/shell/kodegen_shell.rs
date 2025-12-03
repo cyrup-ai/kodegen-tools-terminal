@@ -1,5 +1,6 @@
 use kodegen_bash_shell::{Shell, builtin, openfiles, default_builtins, BuiltinSet};
 use std::io;
+use std::path::PathBuf;
 
 use super::builtins::{SedCommand, LsCommand, LsdCommand, FindCommand, MvCommand, ChmodCommand, ChownCommand, LnCommand, KillCommand, KillallCommand, PkillCommand};
 
@@ -9,7 +10,7 @@ pub struct KodegenShell {
 }
 
 impl KodegenShell {
-    pub async fn new() -> io::Result<Self> {
+    pub async fn new(working_dir: Option<PathBuf>) -> io::Result<Self> {
         // Get default builtins
         let mut builtins = default_builtins(BuiltinSet::BashMode);
 
@@ -34,12 +35,25 @@ impl KodegenShell {
         builtins.insert("ls".to_string(), builtin::<LsCommand>());
         builtins.insert("lsd".to_string(), builtin::<LsdCommand>());
 
-        let shell = Shell::builder()
-            .interactive(true)
-            .builtins(builtins)
-            .build()
-            .await
-            .map_err(|e| io::Error::other(format!("Failed to create shell: {}", e)))?;
+        let shell = match working_dir {
+            Some(dir) => {
+                Shell::builder()
+                    .interactive(true)
+                    .builtins(builtins)
+                    .working_dir(dir)
+                    .build()
+                    .await
+                    .map_err(|e| io::Error::other(format!("Failed to create shell: {}", e)))?
+            }
+            None => {
+                Shell::builder()
+                    .interactive(true)
+                    .builtins(builtins)
+                    .build()
+                    .await
+                    .map_err(|e| io::Error::other(format!("Failed to create shell: {}", e)))?
+            }
+        };
 
         Ok(Self { shell })
     }

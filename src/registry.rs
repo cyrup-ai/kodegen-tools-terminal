@@ -1,7 +1,6 @@
 //! Terminal registry - manages multiple terminal instances
 
-use crate::pty::terminal::Terminal;
-use kodegen_mcp_schema::terminal::TerminalOutput;
+use crate::pty::terminal::{Terminal, types::TerminalCommandResult};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,6 +26,7 @@ impl TerminalRegistry {
         &self,
         connection_id: &str,
         terminal_id: u32,
+        pwd: Option<String>,
     ) -> Result<Arc<Terminal>, anyhow::Error> {
         let key = (connection_id.to_string(), terminal_id);
         let mut terminals = self.terminals.lock().await;
@@ -35,13 +35,15 @@ impl TerminalRegistry {
             return Ok(terminal.clone());
         }
 
-        let terminal = Arc::new(
-            Terminal::builder()
-                .terminal_id(terminal_id)
-                .size(24, 80)
-                .build()
-                .await?,
-        );
+        let mut builder = Terminal::builder()
+            .terminal_id(terminal_id)
+            .size(24, 80);
+
+        if let Some(cwd) = pwd {
+            builder = builder.cwd(cwd);
+        }
+
+        let terminal = Arc::new(builder.build().await?);
 
         terminals.insert(key, terminal.clone());
         Ok(terminal)
@@ -51,7 +53,7 @@ impl TerminalRegistry {
     pub async fn list_all_terminals(
         &self,
         connection_id: &str,
-    ) -> Result<TerminalOutput, anyhow::Error> {
+    ) -> Result<TerminalCommandResult, anyhow::Error> {
         let start = std::time::Instant::now();
         let terminals = self.terminals.lock().await;
 
@@ -62,7 +64,6 @@ impl TerminalRegistry {
                 let state = terminal.read_current_state(*term_id, 2000).await?;
                 snapshots.push(serde_json::json!({
                     "terminal": term_id,
-                    "output": state.output,
                     "cwd": state.cwd,
                     "exit_code": state.exit_code,
                     "completed": state.completed,
@@ -73,7 +74,7 @@ impl TerminalRegistry {
         // Sort by terminal ID
         snapshots.sort_by_key(|v| v["terminal"].as_u64().unwrap_or(0));
 
-        Ok(TerminalOutput {
+        Ok(TerminalCommandResult {
             terminal: None, // None indicates LIST response with multiple terminals
             output: serde_json::to_string_pretty(&snapshots)?,
             exit_code: Some(0),
@@ -88,7 +89,7 @@ impl TerminalRegistry {
         &self,
         connection_id: &str,
         terminal_id: u32,
-    ) -> Result<TerminalOutput, anyhow::Error> {
+    ) -> Result<TerminalCommandResult, anyhow::Error> {
         let start = std::time::Instant::now();
         let key = (connection_id.to_string(), terminal_id);
         let mut terminals = self.terminals.lock().await;
@@ -109,7 +110,7 @@ impl TerminalRegistry {
                 }
             }
 
-            Ok(TerminalOutput {
+            Ok(TerminalCommandResult {
                 terminal: Some(terminal_id),
                 output: format!("Terminal {} shutdown complete", terminal_id),
                 exit_code: Some(0),

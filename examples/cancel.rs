@@ -37,8 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output1 = terminal.execute_command(
         request_id_1,
         "sleep 60 && pwd".to_string(),
+        true,  // clear
         3_000, // 3 second timeout - will timeout since sleep is 60s
         100,
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   Command 1 result:");
@@ -56,8 +58,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output2 = terminal.execute_command(
         request_id_2,
         "ls -al".to_string(),
+        true,   // clear
         30_000, // 30 second timeout
         50,     // tail: return last 50 lines
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   Command 2 result:");

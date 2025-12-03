@@ -70,6 +70,15 @@ impl VteHandle {
 
         (output_lines, cwd, exit_code)
     }
+
+    /// Clear the entire grid (history + viewport + cursor)
+    ///
+    /// This ensures read_grid() returns a clean slate after clearing.
+    /// Used when the `clear` parameter is true before executing a command.
+    pub fn clear_grid(&self) {
+        let mut term = self.term.lock_unfair();
+        term.grid_mut().reset();
+    }
 }
 
 /// VteProcessor thread implementation

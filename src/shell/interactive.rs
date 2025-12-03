@@ -10,6 +10,7 @@ use crate::shell::KodegenShell;
 use futures::StreamExt;
 use kodegen_bash_shell::prelude::ShellVariable;
 use kodegen_bash_shell::{CancellationToken, OutputStreamType};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 
@@ -33,11 +34,16 @@ pub struct KodegenInteractiveThread {
 }
 
 impl KodegenInteractiveThread {
-    pub async fn spawn(_cols: u16, _rows: u16) -> Result<(ShellHandle, tokio::task::JoinHandle<()>), std::io::Error> {
-        log::debug!("KodegenInteractiveThread::spawn() called");
+    pub async fn spawn(
+        _cols: u16,
+        _rows: u16,
+        working_dir: Option<PathBuf>
+    ) -> Result<(ShellHandle, tokio::task::JoinHandle<()>), std::io::Error> {
+        log::debug!("KodegenInteractiveThread::spawn() called with working_dir={:?}", working_dir);
 
         // Create shell (no PTY needed - uses internal pipes)
-        let shell = KodegenShell::new().await?;
+        // Pass working_dir so shell starts in client's directory, not server's
+        let shell = KodegenShell::new(working_dir).await?;
         log::debug!("KodegenShell created successfully");
 
         let (command_tx, command_rx) = mpsc::channel(32);

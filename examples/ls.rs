@@ -89,8 +89,10 @@ async fn demo_exec_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
     let output = terminal.execute_command(
         request_id,
         "pwd && ls -la".to_string(),
+        true,    // clear
         300_000, // 5 minutes timeout
         2000,    // tail: return last 2000 lines
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   ✅ Command completed:");
@@ -117,8 +119,10 @@ async fn demo_background_task(registry: &TerminalRegistry) -> Result<(), Box<dyn
     let output = terminal.execute_command(
         request_id,
         "sleep 1 && echo 'Background task complete' && pwd".to_string(),
+        true, // clear
         0,    // Fire-and-forget!
         2000, // tail: return last 2000 lines
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   ✅ Background task started:");
@@ -187,8 +191,10 @@ async fn demo_lsd_tree(registry: &TerminalRegistry) -> Result<(), Box<dyn std::e
     let output = terminal.execute_command(
         request_id,
         "cd /Volumes/samsung_t9/kodegen-workspace/packages/kodegen-native-notify && lsd --tree ./src/".to_string(),
+        true,   // clear
         30_000, // 30 second timeout
         2000,   // tail: return last 2000 lines
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   ✅ Command completed:");

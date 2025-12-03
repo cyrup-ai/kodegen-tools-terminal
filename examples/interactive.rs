@@ -63,8 +63,10 @@ async fn test_interactive_prompt(registry: &TerminalRegistry) -> Result<(), Box<
     let output = terminal.execute_command(
         request_id,
         command.to_string(),
+        true,  // clear
         5_000, // 5 second timeout
         2000,
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   Result:");

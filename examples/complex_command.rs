@@ -49,8 +49,10 @@ async fn test_for_loop_packages(registry: &TerminalRegistry) -> Result<(), Box<d
     let output = terminal.execute_command(
         request_id,
         command.to_string(),
+        true,   // clear
         60_000, // 60 second timeout
         2000,
+        None,   // ctx: no progress streaming in examples
     ).await?;
 
     log::info!("   ✅ Command completed:");

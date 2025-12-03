@@ -4,6 +4,19 @@ use tokio::sync::broadcast;
 use alacritty_terminal::grid::Dimensions;
 
 use crate::validation::ValidationDecision;
+use kodegen_mcp_tool::ToolExecutionContext;
+
+/// Internal result type for terminal command execution
+/// Contains both output string (for display) and metadata (for typed output)
+#[derive(Debug, Clone)]
+pub struct TerminalCommandResult {
+    pub terminal: Option<u32>,
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub cwd: String,
+    pub duration_ms: u64,
+    pub completed: bool,
+}
 
 /// Represents a virtual terminal component
 /// Terminal emulator using three-thread architecture:
@@ -84,15 +97,21 @@ impl Terminal {
     ///   - On timeout: returns current 120x200 VTE buffer snapshot, command continues in background
     ///   - Use action=READ to check progress later
     ///
+    /// # Clear Parameter
+    /// - `clear`: If true, clears the entire grid (history + viewport + cursor) before executing command
+    ///   This ensures read_grid() returns only the new command's output
+    ///
     /// # Tail Parameter
     /// - `tail`: Maximum number of lines to return from the end of the buffer
     pub async fn execute_command(
         &self,
         request_id: rmcp::model::RequestId,
         command: String,
+        clear: bool,
         await_completion_ms: u64,
         tail: u32,
-    ) -> Result<kodegen_mcp_schema::terminal::TerminalOutput, anyhow::Error> {
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<TerminalCommandResult, anyhow::Error> {
         use super::TerminalBuffer;
         let start = std::time::Instant::now();
 
@@ -111,7 +130,7 @@ impl Terminal {
                     reason
                 );
 
-                return Ok(kodegen_mcp_schema::terminal::TerminalOutput {
+                return Ok(TerminalCommandResult {
                     terminal: Some(self.terminal_id),
                     output: format!(
                         "Error: Command '{}' is not allowed.\n\n\
@@ -148,6 +167,11 @@ impl Terminal {
             // Continue anyway - channel may be full or closed
         }
 
+        // Clear entire grid if requested (BEFORE sending command)
+        if clear && let Some(vte_handle) = self.vte_handle.as_ref() {
+            vte_handle.clear_grid();
+        }
+
         // Subscribe to buffer events (creates new receiver from broadcast sender)
         let mut buffer_rx = self.subscribe_buffer()
             .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
@@ -160,7 +184,7 @@ impl Terminal {
 
         // Special case: await_completion_ms=0 means fire-and-forget background task
         if await_completion_ms == 0 {
-            return Ok(kodegen_mcp_schema::terminal::TerminalOutput {
+            return Ok(TerminalCommandResult {
                 terminal: Some(self.terminal_id),
                 output: format!(
                     "[Background task started: {}]\n\
@@ -188,6 +212,13 @@ impl Terminal {
                     Ok(TerminalBuffer::Updated { request_id: event_req_id, lines, cwd, exit_code, is_final, .. }) => {
                         // Filter: only process events matching our request_id
                         if event_req_id == request_id {
+                            // Stream last line as progress notification (best-effort, ignore errors)
+                            if let Some(ref ctx) = ctx
+                                && let Some(last_line) = lines.last()
+                                    && !last_line.is_empty() {
+                                        let _ = ctx.stream(last_line.clone()).await;
+                                    }
+                            
                             // Apply tail limit - take last N lines
                             let output_lines = if tail > 0 && lines.len() > tail as usize {
                                 &lines[lines.len() - tail as usize..]
@@ -221,7 +252,7 @@ impl Terminal {
                 await_completion_ms
             ));
 
-            return Ok(kodegen_mcp_schema::terminal::TerminalOutput {
+            return Ok(TerminalCommandResult {
                 terminal: Some(self.terminal_id),
                 output: final_output,
                 exit_code: None,
@@ -232,7 +263,7 @@ impl Terminal {
         }
 
         // Command completed successfully within timeout
-        Ok(kodegen_mcp_schema::terminal::TerminalOutput {
+        Ok(TerminalCommandResult {
             terminal: Some(self.terminal_id),
             output: final_output,
             exit_code: final_exit_code,
@@ -253,7 +284,7 @@ impl Terminal {
         &self,
         terminal_id: u32,
         tail: u32,
-    ) -> Result<kodegen_mcp_schema::terminal::TerminalOutput, anyhow::Error> {
+    ) -> Result<TerminalCommandResult, anyhow::Error> {
         let start = std::time::Instant::now();
 
         // Read grid directly from VteHandle - no broadcast channel
@@ -263,7 +294,7 @@ impl Terminal {
         let (lines, cwd, exit_code) = vte_handle.read_grid(tail);
         let output = lines.join("\n");
 
-        Ok(kodegen_mcp_schema::terminal::TerminalOutput {
+        Ok(TerminalCommandResult {
             terminal: Some(terminal_id),
             output,
             exit_code,

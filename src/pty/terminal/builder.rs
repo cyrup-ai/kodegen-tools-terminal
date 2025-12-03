@@ -113,7 +113,9 @@ impl TerminalBuilder {
         };
 
         // Spawn KodegenInteractive thread (creates shell with streaming + cancellation)
-        let (shell_handle, shell_join_handle) = crate::shell::KodegenInteractiveThread::spawn(cols, rows).await?;
+        // Pass working directory from client context (HTTP header X-Kodegen-PWD)
+        let working_dir = self.cwd.as_ref().map(std::path::PathBuf::from);
+        let (shell_handle, shell_join_handle) = crate::shell::KodegenInteractiveThread::spawn(cols, rows, working_dir).await?;
 
         // Subscribe to shell output for VTE processing
         let shell_output_rx = shell_handle.output_tx.subscribe();
