@@ -1,6 +1,7 @@
 //! Terminal registry - manages multiple terminal instances
 
 use crate::pty::terminal::{Terminal, types::TerminalCommandResult};
+use kodegen_mcp_schema::terminal::TerminalSnapshot;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -62,25 +63,28 @@ impl TerminalRegistry {
             if conn_id == connection_id {
                 // Get current state without blocking (use default tail of 2000)
                 let state = terminal.read_current_state(*term_id, 2000).await?;
-                snapshots.push(serde_json::json!({
-                    "terminal": term_id,
-                    "cwd": state.cwd,
-                    "exit_code": state.exit_code,
-                    "completed": state.completed,
-                }));
+                snapshots.push(TerminalSnapshot {
+                    terminal: *term_id,
+                    cwd: state.cwd,
+                    exit_code: state.exit_code,
+                    completed: state.completed,
+                });
             }
         }
 
         // Sort by terminal ID
-        snapshots.sort_by_key(|v| v["terminal"].as_u64().unwrap_or(0));
+        snapshots.sort_by_key(|s| s.terminal);
+
+        let output = serde_json::to_string_pretty(&snapshots)?;
 
         Ok(TerminalCommandResult {
             terminal: None, // None indicates LIST response with multiple terminals
-            output: serde_json::to_string_pretty(&snapshots)?,
+            output,
             exit_code: Some(0),
             cwd: "/".to_string(),
             duration_ms: start.elapsed().as_millis() as u64,
             completed: true,
+            terminals: snapshots,
         })
     }
 
@@ -117,6 +121,7 @@ impl TerminalRegistry {
                 cwd: "/".to_string(),
                 duration_ms: start.elapsed().as_millis() as u64,
                 completed: true,
+                terminals: Vec::new(),
             })
         } else {
             Err(anyhow::anyhow!(

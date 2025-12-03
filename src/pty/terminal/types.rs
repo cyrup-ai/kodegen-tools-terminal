@@ -16,6 +16,8 @@ pub struct TerminalCommandResult {
     pub cwd: String,
     pub duration_ms: u64,
     pub completed: bool,
+    /// List of terminal snapshots (for LIST action)
+    pub terminals: Vec<kodegen_mcp_schema::terminal::TerminalSnapshot>,
 }
 
 /// Represents a virtual terminal component
@@ -149,6 +151,7 @@ impl Terminal {
                     cwd: "/".to_string(),
                     duration_ms,
                     completed: true,
+                    terminals: Vec::new(),
                 });
             }
             ValidationDecision::Allow => {
@@ -196,6 +199,7 @@ impl Terminal {
                 cwd: "/".to_string(),
                 duration_ms: start.elapsed().as_millis() as u64,
                 completed: false,
+                terminals: Vec::new(),
             });
         }
 
@@ -259,6 +263,7 @@ impl Terminal {
                 cwd: final_cwd.display().to_string(),
                 duration_ms,
                 completed: false,
+                terminals: Vec::new(),
             });
         }
 
@@ -270,6 +275,7 @@ impl Terminal {
             cwd: final_cwd.display().to_string(),
             duration_ms,
             completed,
+            terminals: Vec::new(),
         })
     }
 
@@ -301,6 +307,7 @@ impl Terminal {
             cwd,
             duration_ms: start.elapsed().as_millis() as u64,
             completed: true, // READ operation itself is complete
+            terminals: Vec::new(),
         })
     }
 

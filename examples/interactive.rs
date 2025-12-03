@@ -57,7 +57,7 @@ async fn test_interactive_prompt(registry: &TerminalRegistry) -> Result<(), Box<
     log::info!("   Timeout: 5 seconds");
     log::info!("   Expected: Should timeout after 5 seconds, NOT hang forever");
 
-    let terminal = registry.find_or_create_terminal("demo-connection", 0).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 0, None).await?;
     let request_id = rmcp::model::RequestId::String("test-interactive".to_string().into());
 
     let output = terminal.execute_command(

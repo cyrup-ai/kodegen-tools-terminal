@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = TerminalRegistry::new();
 
     // Get terminal 0
-    let terminal = registry.find_or_create_terminal("demo-connection", 0).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 0, None).await?;
 
     // Command 1: Start a long-running command with short timeout
     // We use await_completion_ms=3000 (3 seconds) so we don't wait forever

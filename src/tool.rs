@@ -145,6 +145,7 @@ impl Tool for TerminalTool {
                 cwd: output.cwd,
                 duration_ms: start.elapsed().as_millis() as u64,
                 completed: output.completed,
+                terminals: output.terminals,
             },
         ))
     }

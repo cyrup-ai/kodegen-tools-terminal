@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create registry
     let registry = TerminalRegistry::new();
-    let terminal = registry.find_or_create_terminal("clear-demo", 0).await?;
+    let terminal = registry.find_or_create_terminal("clear-demo", 0, None).await?;
 
     // Command 1: Echo first message
     log::info!("🔵 COMMAND 1 on terminal:0");

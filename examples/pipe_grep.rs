@@ -45,7 +45,7 @@ async fn test_pipe_grep(registry: &TerminalRegistry) -> Result<(), Box<dyn std::
     log::info!("🧪 TEST 1: Grep in Pipe");
     log::info!("   Command: {}", command);
 
-    let terminal = registry.find_or_create_terminal("demo-connection", 0).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 0, None).await?;
     let request_id = rmcp::model::RequestId::String("test-pipe-grep".to_string().into());
 
     let output = terminal.execute_command(
@@ -81,7 +81,7 @@ async fn test_complex_pipe_grep(registry: &TerminalRegistry) -> Result<(), Box<d
     log::info!("\n🧪 TEST 2: Complex Pipe with Grep");
     log::info!("   Command: {}", command);
 
-    let terminal = registry.find_or_create_terminal("demo-connection", 0).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 0, None).await?;
     let request_id = rmcp::model::RequestId::String("test-complex-pipe".to_string().into());
 
     let output = terminal.execute_command(

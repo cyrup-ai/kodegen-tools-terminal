@@ -82,7 +82,7 @@ async fn demo_exec_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
     log::info!("   - Default timeout: 300000ms (5 minutes)");
     log::info!("   - Terminal: 0 (default, zero-based indexing)");
 
-    let terminal = registry.find_or_create_terminal("demo-connection", 0).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 0, None).await?;
     let request_id = rmcp::model::RequestId::String("exec-demo-1".to_string().into());
 
     log::info!("\n   Executing: pwd && ls -la");
@@ -112,7 +112,7 @@ async fn demo_background_task(registry: &TerminalRegistry) -> Result<(), Box<dyn
     log::info!("   - Fire-and-forget: await_completion_ms=0");
     log::info!("   - Terminal: 1 (parallel work)");
 
-    let terminal = registry.find_or_create_terminal("demo-connection", 1).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 1, None).await?;
     let request_id = rmcp::model::RequestId::String("exec-bg-1".to_string().into());
 
     log::info!("\n   Starting background task: sleep 1 && echo 'Background task complete'");
@@ -144,7 +144,7 @@ async fn demo_read_action(registry: &TerminalRegistry) -> Result<(), Box<dyn std
     log::info!("   - No command execution");
 
     // Read terminal:1 (where background task ran)
-    let terminal = registry.find_or_create_terminal("demo-connection", 1).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 1, None).await?;
     let output = terminal.read_current_state(1, 2000).await?;
 
     log::info!("\n   ✅ Terminal:1 current state:");
@@ -184,7 +184,7 @@ async fn demo_lsd_tree(registry: &TerminalRegistry) -> Result<(), Box<dyn std::e
     log::info!("   - Testing tree output with lsd");
     log::info!("   - Terminal: 2");
 
-    let terminal = registry.find_or_create_terminal("demo-connection", 2).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 2, None).await?;
     let request_id = rmcp::model::RequestId::String("exec-lsd-tree".to_string().into());
 
     log::info!("\n   Executing: cd /Volumes/samsung_t9/kodegen-workspace/packages/kodegen-native-notify && lsd --tree ./src/");

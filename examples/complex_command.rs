@@ -43,7 +43,7 @@ async fn test_for_loop_packages(registry: &TerminalRegistry) -> Result<(), Box<d
     log::info!("   Command (showing \\n as newlines):");
     log::info!("{}", command);
 
-    let terminal = registry.find_or_create_terminal("demo-connection", 0).await?;
+    let terminal = registry.find_or_create_terminal("demo-connection", 0, None).await?;
     let request_id = rmcp::model::RequestId::String("test-for-loop".to_string().into());
 
     let output = terminal.execute_command(
