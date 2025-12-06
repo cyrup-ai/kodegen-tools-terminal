@@ -4,11 +4,58 @@ use crate::pty::terminal::events::{ShellOutput, TerminalBuffer};
 use crate::pty::terminal::sync::FairMutex;
 use crate::pty::terminal::EventBridge;
 use alacritty_terminal::term::{Term, Config as AlacrittyConfig};
+use alacritty_terminal::term::cell::{Flags, LineLength};
 use alacritty_terminal::index::{Line, Column};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
+use alacritty_terminal::term::cell::Cell;
+use vte::ansi::{ClearMode, Handler, Mode as AnsiMode, NamedMode};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
+
+/// Extract lines from grid, trimming trailing whitespace from each line
+fn extract_lines_from_grid(grid: &Grid<Cell>) -> Vec<String> {
+    let history_size = grid.history_size();
+    let screen_lines = grid.screen_lines();
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    for line_idx in (-(history_size as i32))..(screen_lines as i32) {
+        let line = &grid[Line(line_idx)];
+        let content_length = line.line_length().0;
+
+        for col_idx in 0..content_length {
+            let cell = &line[Column(col_idx)];
+            if !cell.flags().contains(Flags::WIDE_CHAR_SPACER) {
+                current_line.push(cell.c);
+            }
+        }
+
+        let last_col = grid.columns().saturating_sub(1);
+        let wraps = line[Column(last_col)].flags().contains(Flags::WRAPLINE);
+
+        if !wraps {
+            lines.push(current_line.trim_end().to_string());
+            current_line.clear();
+        }
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line.trim_end().to_string());
+    }
+
+    // Trim trailing empty lines
+    while let Some(last) = lines.last() {
+        if last.is_empty() {
+            lines.pop();
+        } else {
+            break;
+        }
+    }
+
+    lines
+}
 
 /// Handle to control the VteProcessor thread
 pub struct VteHandle {
@@ -25,31 +72,7 @@ impl VteHandle {
     /// working directory, and last known exit code.
     pub fn read_grid(&self, tail: u32) -> (Vec<String>, String, Option<i32>) {
         let term = self.term.lock_unfair();
-        let grid = term.grid();
-
-        // Extract lines from full grid including scrollback
-        let history_size = grid.history_size();
-        let screen_lines = grid.screen_lines();
-        let total_lines = history_size + screen_lines;
-
-        let mut lines = Vec::with_capacity(total_lines);
-        for line_idx in (-(history_size as i32))..(screen_lines as i32) {
-            let line = &grid[Line(line_idx)];
-            let mut line_str = String::with_capacity(grid.columns());
-            for col_idx in 0..grid.columns() {
-                line_str.push(line[Column(col_idx)].c);
-            }
-            lines.push(line_str.trim_end().to_string());
-        }
-
-        // Trim trailing empty lines
-        while let Some(last) = lines.last() {
-            if last.is_empty() {
-                lines.pop();
-            } else {
-                break;
-            }
-        }
+        let lines = extract_lines_from_grid(term.grid());
 
         // Apply tail limit
         let output_lines = if tail > 0 && lines.len() > tail as usize {
@@ -77,7 +100,10 @@ impl VteHandle {
     /// Used when the `clear` parameter is true before executing a command.
     pub fn clear_grid(&self) {
         let mut term = self.term.lock_unfair();
-        term.grid_mut().reset();
+        // Use clear_screen instead of grid reset - preserves terminal modes like LINE_FEED_NEW_LINE
+        // Order matters: All scrolls viewport to history, then Saved clears that history
+        term.clear_screen(ClearMode::All);    // Clear viewport (scrolls to history first)
+        term.clear_screen(ClearMode::Saved);  // Clear scrollback (including what was just scrolled)
     }
 }
 
@@ -108,7 +134,12 @@ impl VteProcessorThread {
             scrolling_history: term_size.scrollback,
             ..Default::default()
         };
-        let term = Term::new(alacritty_config, &term_size, event_bridge);
+        let mut term = Term::new(alacritty_config, &term_size, event_bridge);
+
+        // Enable LINE_FEED_NEW_LINE mode so LF also does CR (like ONLCR in a real PTY)
+        // This ensures cursor resets to column 0 on newlines, matching expected terminal behavior
+        term.set_mode(AnsiMode::Named(NamedMode::LineFeedNewLine));
+
         let term = Arc::new(FairMutex::new(term));
 
         let parser = vte::ansi::Processor::new();
@@ -170,6 +201,19 @@ impl VteProcessorThread {
         match event {
             ShellOutput::Bytes { request_id, data } => {
                 log::debug!("VteProcessor: processing {} bytes for request_id={:?}", data.len(), request_id);
+
+                // Convert LF to CRLF so cursor returns to column 0 on newlines
+                // This is necessary because LF only moves cursor down (linefeed),
+                // it doesn't return to column 0. Without CR, content gets written
+                // at the cursor's current column position, causing indentation issues.
+                let mut transformed = Vec::with_capacity(data.len() + data.iter().filter(|&&b| b == b'\n').count());
+                for &byte in &data {
+                    if byte == b'\n' {
+                        transformed.push(b'\r');
+                    }
+                    transformed.push(byte);
+                }
+
                 // Reserve fairness lock (prevents API starvation)
                 let _lease = self.term.lease();
 
@@ -179,8 +223,8 @@ impl VteProcessorThread {
                     None => return, // Locked by API, skip this batch
                 };
 
-                // Process VTE sequences
-                self.parser.advance(&mut *term, &data);
+                // Process VTE sequences with transformed data
+                self.parser.advance(&mut *term, &transformed);
                 drop(term);
 
                 // Emit incremental update
@@ -211,34 +255,7 @@ impl VteProcessorThread {
         log::debug!("VteProcessor: emit_buffer_update request_id={:?}, exit_code={}, is_final={}", request_id, exit_code, is_final);
         // Acquire unfair lock for reading grid (like Alacritty does)
         let term = self.term.lock_unfair();
-        let grid = term.grid();
-
-        // Extract lines from full grid including scrollback history
-        // Line indices: negative = scrollback, 0+ = visible screen
-        let history_size = grid.history_size();
-        let screen_lines = grid.screen_lines();
-        let total_lines = history_size + screen_lines;
-        
-        let mut lines = Vec::with_capacity(total_lines);
-        for line_idx in (-(history_size as i32))..(screen_lines as i32) {
-            let line = &grid[Line(line_idx)];
-            let mut line_str = String::with_capacity(grid.columns());
-            for col_idx in 0..grid.columns() {
-                line_str.push(line[Column(col_idx)].c);
-            }
-            // Trim trailing whitespace from each line
-            let trimmed = line_str.trim_end();
-            lines.push(trimmed.to_string());
-        }
-
-        // Trim trailing empty lines
-        while let Some(last) = lines.last() {
-            if last.is_empty() {
-                lines.pop();
-            } else {
-                break;
-            }
-        }
+        let lines = extract_lines_from_grid(term.grid());
 
         // Get cursor position
         let cursor = term.grid().cursor.point;

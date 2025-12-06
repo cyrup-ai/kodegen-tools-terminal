@@ -31,20 +31,33 @@ pub struct KodegenInteractiveThread {
     /// Current cancellation token - set when command starts, cancelled on cancel_rx
     current_token: Arc<RwLock<Option<CancellationToken>>>,
     current_request_id: Arc<RwLock<rmcp::model::RequestId>>,
+    /// Terminal columns (for COLUMNS environment variable)
+    cols: u16,
+    /// Terminal rows (for LINES environment variable)
+    rows: u16,
 }
 
 impl KodegenInteractiveThread {
     pub async fn spawn(
-        _cols: u16,
-        _rows: u16,
+        cols: u16,
+        rows: u16,
         working_dir: Option<PathBuf>
     ) -> Result<(ShellHandle, tokio::task::JoinHandle<()>), std::io::Error> {
         log::debug!("KodegenInteractiveThread::spawn() called with working_dir={:?}", working_dir);
 
         // Create shell (no PTY needed - uses internal pipes)
         // Pass working_dir so shell starts in client's directory, not server's
-        let shell = KodegenShell::new(working_dir).await?;
+        let mut shell = KodegenShell::new(working_dir).await?;
         log::debug!("KodegenShell created successfully");
+
+        // Set COLUMNS and LINES environment variables for shell commands
+        if let Err(e) = shell.shell_mut().env.set_global("COLUMNS", ShellVariable::new(cols.to_string())) {
+            log::warn!("Failed to set COLUMNS during initialization: {}", e);
+        }
+        if let Err(e) = shell.shell_mut().env.set_global("LINES", ShellVariable::new(rows.to_string())) {
+            log::warn!("Failed to set LINES during initialization: {}", e);
+        }
+        log::debug!("Set COLUMNS={} LINES={}", cols, rows);
 
         let (command_tx, command_rx) = mpsc::channel(32);
         let (cancel_tx, cancel_rx) = mpsc::channel(4);
@@ -61,6 +74,8 @@ impl KodegenInteractiveThread {
             output_tx: output_tx.clone(),
             current_token,
             current_request_id,
+            cols,
+            rows,
         };
 
         let join_handle = tokio::spawn(async move {
@@ -233,6 +248,14 @@ impl KodegenInteractiveThread {
 
         if let Err(e) = self.shell.shell_mut().env.set_global("PS1", ShellVariable::new(&prompt)) {
             log::warn!("Failed to set PS1: {}", e);
+        }
+
+        // Set COLUMNS and LINES for shell commands (ls, lsd, tree, etc.)
+        if let Err(e) = self.shell.shell_mut().env.set_global("COLUMNS", ShellVariable::new(self.cols.to_string())) {
+            log::warn!("Failed to set COLUMNS: {}", e);
+        }
+        if let Err(e) = self.shell.shell_mut().env.set_global("LINES", ShellVariable::new(self.rows.to_string())) {
+            log::warn!("Failed to set LINES: {}", e);
         }
 
         // Send prompt as output bytes so it appears in terminal buffer

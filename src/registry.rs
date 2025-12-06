@@ -38,7 +38,7 @@ impl TerminalRegistry {
 
         let mut builder = Terminal::builder()
             .terminal_id(terminal_id)
-            .size(24, 80);
+            .size(2000, 120);  // Force dimensions: 2000 rows x 120 cols
 
         if let Some(cwd) = pwd {
             builder = builder.cwd(cwd);

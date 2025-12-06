@@ -24,8 +24,8 @@ impl TerminalBuilder {
         Self {
             terminal_id: None,
             // Default to a comfortable terminal size
-            rows: Some(30),
-            cols: Some(100),
+            rows: Some(2000),
+            cols: Some(120),
             cwd: None,
             env_vars: HashMap::from([
                 // Enable truecolor support by default
@@ -103,7 +103,7 @@ impl TerminalBuilder {
     /// Returns a ready-to-use Terminal (no separate init() needed).
     pub async fn build(self) -> io::Result<Terminal> {
         log::debug!("TerminalBuilder::build() called");
-        let rows = self.rows.unwrap_or(200);
+        let rows = self.rows.unwrap_or(2000);
         let cols = self.cols.unwrap_or(120);
 
         let term_size = TermSize {

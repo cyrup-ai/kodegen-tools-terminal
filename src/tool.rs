@@ -1,9 +1,9 @@
 //! Terminal tool implementation
 
 use crate::TerminalRegistry;
-use kodegen_mcp_schema::terminal::{TERMINAL, TerminalAction, TerminalInput, TerminalOutput};
-use kodegen_mcp_tool::error::McpError;
-use kodegen_mcp_tool::{Tool, ToolExecutionContext, ToolResponse};
+use kodegen_mcp_schema::terminal::{TERMINAL, TerminalAction, TerminalInput, TerminalOutput, TerminalPrompts};
+use kodegen_mcp_schema::McpError;
+use kodegen_mcp_schema::{Tool, ToolExecutionContext, ToolResponse};
 use std::sync::Arc;
 
 /// Terminal tool - executes commands in persistent terminal sessions
@@ -37,7 +37,7 @@ impl Default for TerminalTool {
 
 impl Tool for TerminalTool {
     type Args = TerminalInput;
-    type PromptArgs = ();
+    type Prompts = TerminalPrompts;
 
     fn name() -> &'static str {
         TERMINAL
@@ -48,7 +48,7 @@ impl Tool for TerminalTool {
          Supports 4 actions: EXEC (execute command), READ (get current buffer), LIST (show all terminals), \
          KILL (gracefully shutdown). Terminals maintain environment variables, working directory, and \
          shell state across commands. Use different terminal numbers (0, 1, 2...) for parallel work. \
-         Returns 120x200 VTE buffer snapshots - actual rendered terminal output, not raw bytes. \
+         Returns complete terminal output - actual rendered terminal output, not raw bytes. \
          Supports background tasks (await_completion_ms=0) and timeout with continuation."
     }
 
@@ -66,14 +66,6 @@ impl Tool for TerminalTool {
 
     fn open_world() -> bool {
         true
-    }
-
-    fn prompt_arguments() -> Vec<rmcp::model::PromptArgument> {
-        vec![]
-    }
-
-    async fn prompt(&self, _args: Self::PromptArgs) -> Result<Vec<rmcp::model::PromptMessage>, McpError> {
-        Ok(vec![])
     }
 
     async fn execute(

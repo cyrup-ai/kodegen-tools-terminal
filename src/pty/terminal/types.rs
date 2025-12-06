@@ -4,7 +4,7 @@ use tokio::sync::broadcast;
 use alacritty_terminal::grid::Dimensions;
 
 use crate::validation::ValidationDecision;
-use kodegen_mcp_tool::ToolExecutionContext;
+use kodegen_mcp_schema::ToolExecutionContext;
 
 /// Internal result type for terminal command execution
 /// Contains both output string (for display) and metadata (for typed output)
@@ -96,7 +96,7 @@ impl Terminal {
     /// # Timeout Behavior
     /// - `await_completion_ms = 0`: Fire-and-forget (returns immediately, command runs in background)
     /// - `await_completion_ms > 0`: Wait up to N milliseconds for completion
-    ///   - On timeout: returns current 120x200 VTE buffer snapshot, command continues in background
+    ///   - On timeout: returns current terminal output, command continues in background
     ///   - Use action=READ to check progress later
     ///
     /// # Clear Parameter
@@ -247,11 +247,11 @@ impl Terminal {
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        // Handle timeout: return current 120x200 VTE buffer snapshot
+        // Handle timeout: return current terminal output
         if result.is_err() {
             final_output.push_str(&format!(
                 "\n\n[Command still running after {}ms timeout]\n\
-                 [This is the current 120x200 VTE buffer snapshot]\n\
+                 [This is the current terminal output]\n\
                  [Command continues in background - use action=READ to check progress]",
                 await_completion_ms
             ));
