@@ -3,7 +3,8 @@
 //! Serves terminal tools via HTTP/HTTPS transport using kodegen_server_http.
 
 use anyhow::Result;
-use kodegen_server_http::{ConnectionCleanupFn, Managers, RouterSet, register_tool, run_http_server};
+use kodegen_config::CATEGORY_TERMINAL;
+use kodegen_server_http::{ConnectionCleanupFn, Managers, RouterSet, ServerBuilder, register_tool};
 use rmcp::handler::server::router::{prompt::PromptRouter, tool::ToolRouter};
 use std::future::Future;
 use std::pin::Pin;
@@ -11,8 +12,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    run_http_server("terminal", |_config, _tracker| {
-        Box::pin(async move {
+    ServerBuilder::new()
+        .category(CATEGORY_TERMINAL)
+        .register_tools(|| async {
             let tool_router = ToolRouter::new();
             let prompt_router = PromptRouter::new();
             let managers = Managers::new();
@@ -45,6 +47,6 @@ async fn main() -> Result<()> {
             router_set.connection_cleanup = Some(cleanup);
             Ok(router_set)
         })
-    })
-    .await
+        .run()
+        .await
 }

@@ -17,12 +17,12 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 /// Browser HTTP server configuration
-const HTTP_PORT: u16 = 30451;
+const HTTP_PORT: u16 = kodegen_config::PORT_TERMINAL;
 const BINARY_NAME: &str = "kodegen-terminal";
 const PACKAGE_NAME: &str = "kodegen_tools_terminal";
 
 /// HTTP server URL for browser examples
-const HTTP_URL: &str = "http://127.0.0.1:30451/mcp";
+const HTTP_URL: &str = const_format::formatcp!("http://127.0.0.1:{}/mcp", kodegen_config::PORT_TERMINAL);
 
 /// Cached workspace root
 static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
