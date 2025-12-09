@@ -13,6 +13,7 @@ use std::path::PathBuf;
 /// This queries the operating system for the process's CWD using platform-specific APIs:
 /// - **Linux**: Reads `/proc/{pid}/cwd` symlink
 /// - **macOS**: Uses `proc_pidinfo` syscall with `PROC_PIDVNODEPATHINFO`
+/// - **Windows**: Reads PEB via `NtQueryInformationProcess` + `ReadProcessMemory`
 ///
 /// # Arguments
 /// * `pid` - Process ID of the PTY child process
@@ -22,9 +23,10 @@ use std::path::PathBuf;
 /// * `Err(io::Error)` - Failed to query CWD (process died, permission denied, etc.)
 ///
 /// # References
-/// Based on alacritty's implementation:
+/// Based on alacritty's implementation (Linux/macOS only - Windows is a kodegen extension):
 /// - Linux: `alacritty/src/daemon.rs:94-117`
 /// - macOS: `alacritty/src/macos/proc.rs:54-69`
+/// - Windows: Uses undocumented NT APIs to read process PEB
 pub fn get_cwd(pid: u32) -> io::Result<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -36,8 +38,14 @@ pub fn get_cwd(pid: u32) -> io::Result<PathBuf> {
         macos::get_cwd_macos(pid)
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
     {
+        windows::get_cwd_windows(pid)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = pid; // Silence unused variable warning on unsupported platforms
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "CWD tracking not supported on this platform",
@@ -82,5 +90,109 @@ mod macos {
             .to_str()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(PathBuf::from(path_str))
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::io;
+    use std::mem;
+    use std::path::PathBuf;
+    use std::ptr;
+
+    use ntapi::ntpsapi::{NtQueryInformationProcess, ProcessBasicInformation, PROCESS_BASIC_INFORMATION};
+    use ntapi::ntrtl::RTL_USER_PROCESS_PARAMETERS;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+    use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+
+    /// Get CWD on Windows by reading the PEB (Process Environment Block)
+    pub fn get_cwd_windows(pid: u32) -> io::Result<PathBuf> {
+        unsafe {
+            // Open process with query and read permissions
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+            if handle == ptr::null_mut() {
+                return Err(io::Error::last_os_error());
+            }
+
+            // Ensure handle is closed on drop
+            let _guard = HandleGuard(handle);
+
+            // Query process basic information to get PEB address
+            let mut pbi: PROCESS_BASIC_INFORMATION = mem::zeroed();
+            let mut return_length = 0u32;
+            let status = NtQueryInformationProcess(
+                handle as *mut _,
+                ProcessBasicInformation,
+                &mut pbi as *mut _ as *mut _,
+                mem::size_of::<PROCESS_BASIC_INFORMATION>() as u32,
+                &mut return_length,
+            );
+
+            if status < 0 {
+                return Err(io::Error::from_raw_os_error(status));
+            }
+
+            // Read ProcessParameters pointer from PEB
+            let mut process_params_ptr: *mut RTL_USER_PROCESS_PARAMETERS = ptr::null_mut();
+            let peb_offset = 0x20usize; // Offset of ProcessParameters in PEB
+            let peb_addr = (pbi.PebBaseAddress as usize + peb_offset) as *const _;
+
+            if ReadProcessMemory(
+                handle,
+                peb_addr,
+                &mut process_params_ptr as *mut _ as *mut _,
+                mem::size_of::<*mut RTL_USER_PROCESS_PARAMETERS>(),
+                ptr::null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            // Read ProcessParameters structure
+            let mut process_params: RTL_USER_PROCESS_PARAMETERS = mem::zeroed();
+            if ReadProcessMemory(
+                handle,
+                process_params_ptr as *const _,
+                &mut process_params as *mut _ as *mut _,
+                mem::size_of::<RTL_USER_PROCESS_PARAMETERS>(),
+                ptr::null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            // Read CurrentDirectory.DosPath string
+            let cwd_length = process_params.CurrentDirectory.DosPath.Length as usize;
+            if cwd_length == 0 {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "No CWD found"));
+            }
+
+            let mut cwd_buffer: Vec<u16> = vec![0; cwd_length / 2 + 1];
+            if ReadProcessMemory(
+                handle,
+                process_params.CurrentDirectory.DosPath.Buffer as *const _,
+                cwd_buffer.as_mut_ptr() as *mut _,
+                cwd_length,
+                ptr::null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            // Convert wide string to PathBuf
+            let cwd_str = String::from_utf16_lossy(&cwd_buffer[..cwd_length / 2]);
+            Ok(PathBuf::from(cwd_str))
+        }
+    }
+
+    struct HandleGuard(HANDLE);
+
+    impl Drop for HandleGuard {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
     }
 }
