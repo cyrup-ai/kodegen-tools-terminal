@@ -130,7 +130,7 @@ impl Tool for TerminalTool {
         // Return typed response with display (terminal output) and metadata (TerminalOutput struct)
         // Terminal output is ONLY in the display field (Vec[Content]0), not duplicated in typed output
         Ok(ToolResponse::new(
-            output.output,
+            format!("\x1b[90m{}\x1b[0m", output.output),
             TerminalOutput {
                 terminal: output.terminal.or(Some(terminal_id)),
                 exit_code: output.exit_code,
