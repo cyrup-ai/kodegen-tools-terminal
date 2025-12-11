@@ -129,8 +129,9 @@ impl Tool for TerminalTool {
 
         // Return typed response with display (terminal output) and metadata (TerminalOutput struct)
         // Terminal output is ONLY in the display field (Vec[Content]0), not duplicated in typed output
+        // LIGHT GREY ANSI 247 (RGB 158,158,158 ≈ #9e9e9e) - wraps ALL output lines
         Ok(ToolResponse::new(
-            format!("\x1b[90m{}\x1b[0m", output.output),
+            format!("\x1b[38;5;247m{}\x1b[0m", output.output),
             TerminalOutput {
                 terminal: output.terminal.or(Some(terminal_id)),
                 exit_code: output.exit_code,
