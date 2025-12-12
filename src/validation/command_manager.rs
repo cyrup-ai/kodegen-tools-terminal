@@ -45,7 +45,7 @@ impl CommandManager {
     /// Extract the base command (first word, lowercase, trimmed) from a command string
     /// Handles full paths by extracting just the executable name
     #[must_use]
-    pub fn get_base_command(&self, command: &str) -> String {
+    pub fn get_base_command(command: &str) -> String {
         let first_word = command.split_whitespace().next().unwrap_or("").trim();
 
         // Extract basename from path (handles /bin/rm, /usr/bin/sudo, ../../bin/chmod, etc.)
@@ -65,8 +65,8 @@ impl CommandManager {
     /// Extract all commands from a command string, handling quotes, escaping, and separators
     /// Returns empty Vec on parsing error (safer than permissive fallback)
     #[must_use]
-    pub fn extract_commands(&self, command_string: &str) -> Vec<String> {
-        match self.extract_commands_internal(command_string) {
+    pub fn extract_commands(command_string: &str) -> Vec<String> {
+        match Self::extract_commands_internal(command_string) {
             Ok(commands) => commands,
             Err(e) => {
                 // Log the error with full command for debugging
@@ -84,7 +84,7 @@ impl CommandManager {
 
     /// Internal implementation for extracting commands
     /// Handles quotes, escape sequences, command separators, and nested structures
-    fn extract_commands_internal(&self, command_string: &str) -> Result<Vec<String>, String> {
+    fn extract_commands_internal(command_string: &str) -> Result<Vec<String>, String> {
         let command_string = command_string.trim();
         if command_string.is_empty() {
             return Ok(Vec::new());
@@ -151,7 +151,7 @@ impl CommandManager {
                     let subshell_content: String =
                         chars[(i + 1)..(subshell_end - 1)].iter().collect();
                     // Recursively extract commands from the subshell
-                    let sub_commands = self.extract_commands_internal(&subshell_content)?;
+                    let sub_commands = Self::extract_commands_internal(&subshell_content)?;
                     commands.extend(sub_commands);
                     i = subshell_end;
                     continue;
@@ -164,7 +164,7 @@ impl CommandManager {
                 if Self::starts_with_at(&chars, i, separator) {
                     // We found a separator - extract the command before it
                     if !current_cmd.trim().is_empty()
-                        && let Some(base_command) = self.extract_base_command(current_cmd.trim())
+                        && let Some(base_command) = Self::extract_base_command(current_cmd.trim())
                     {
                         commands.push(base_command);
                     }
@@ -185,7 +185,7 @@ impl CommandManager {
 
         // Don't forget to add the last command
         if !current_cmd.trim().is_empty()
-            && let Some(base_command) = self.extract_base_command(current_cmd.trim())
+            && let Some(base_command) = Self::extract_base_command(current_cmd.trim())
         {
             commands.push(base_command);
         }
@@ -242,7 +242,7 @@ impl CommandManager {
     /// Extract the actual command name from a command string
     /// Removes environment variables and returns the base command
     #[must_use]
-    pub fn extract_base_command(&self, command_str: &str) -> Option<String> {
+    pub fn extract_base_command(command_str: &str) -> Option<String> {
         if let Ok(cmd) = Self::extract_base_command_internal(command_str) {
             cmd
         } else {

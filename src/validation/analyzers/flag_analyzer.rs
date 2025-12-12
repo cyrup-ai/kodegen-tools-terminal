@@ -49,13 +49,16 @@ static XARGS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .expect("hardcoded XARGS_PATTERN must compile")
 });
 
-/// Pre-compiled pattern for chmod/chown (without lookahead)
+/// Pre-compiled pattern for chown (without lookahead)
 ///
-/// Matches chmod or chown at command start
+/// Matches chown at command start. chown requires root privileges
+/// and should always be blocked. chmod is handled by PathAnalyzer
+/// which allows it within git_root, user home, and /tmp.
+///
 /// The --help flag is checked separately in analyze()
-static CHMOD_CHOWN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(chmod|chown)\s+")
-        .expect("hardcoded CHMOD_CHOWN_PATTERN must compile")
+static CHOWN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^chown\s+")
+        .expect("hardcoded CHOWN_PATTERN must compile")
 });
 
 /// Flag analyzer - detects dangerous command-line flags using pre-compiled patterns
@@ -178,13 +181,14 @@ impl FlagAnalyzer {
             }
         }
 
-        // Check for chmod/chown (except --help)
-        // Rust regex doesn't support negative lookahead, so we check manually
-        if CHMOD_CHOWN_PATTERN.is_match(command) {
+        // Check for chown (except --help)
+        // chown requires root privileges and should always be blocked
+        // chmod is handled by PathAnalyzer which allows it within git_root
+        if CHOWN_PATTERN.is_match(command) {
             // Allow if command is just asking for help
             if !command.contains("--help") {
                 return Some(ValidationDecision::Block {
-                    reason: "chmod/chown are permission management commands that should use MCP tools instead".to_string(),
+                    reason: "chown requires elevated privileges (root/sudo) and is not allowed".to_string(),
                     violation_type: ViolationType::DangerousFlag,
                 });
             }
@@ -253,15 +257,18 @@ mod tests {
     }
 
     #[test]
-    fn test_chmod_chown_detection() {
+    fn test_chown_detection() {
         let analyzer = FlagAnalyzer::new();
 
-        // Should block chmod/chown
-        assert!(analyzer.analyze("chmod 755 file.txt").is_some());
-        assert!(analyzer.analyze("chown user:group file.txt").is_some());
+        // chmod is NOT blocked by FlagAnalyzer - PathAnalyzer handles it
+        assert!(analyzer.analyze("chmod 755 file.txt").is_none());
+        assert!(analyzer.analyze("chmod +x script.sh").is_none());
 
-        // Allow --help
-        assert!(analyzer.analyze("chmod --help").is_none());
+        // chown IS blocked (requires root privileges)
+        assert!(analyzer.analyze("chown user:group file.txt").is_some());
+        assert!(analyzer.analyze("chown root file.txt").is_some());
+
+        // Allow --help for chown
         assert!(analyzer.analyze("chown --help").is_none());
     }
 }

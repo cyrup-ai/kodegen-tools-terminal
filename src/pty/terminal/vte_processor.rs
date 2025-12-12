@@ -202,29 +202,16 @@ impl VteProcessorThread {
             ShellOutput::Bytes { request_id, data } => {
                 log::debug!("VteProcessor: processing {} bytes for request_id={:?}", data.len(), request_id);
 
-                // Convert LF to CRLF so cursor returns to column 0 on newlines
-                // This is necessary because LF only moves cursor down (linefeed),
-                // it doesn't return to column 0. Without CR, content gets written
-                // at the cursor's current column position, causing indentation issues.
-                let mut transformed = Vec::with_capacity(data.len() + data.iter().filter(|&&b| b == b'\n').count());
-                for &byte in &data {
-                    if byte == b'\n' {
-                        transformed.push(b'\r');
-                    }
-                    transformed.push(byte);
-                }
-
                 // Reserve fairness lock (prevents API starvation)
                 let _lease = self.term.lease();
 
-                // Try to acquire data lock (non-blocking)
-                let mut term = match self.term.try_lock_unfair() {
-                    Some(t) => t,
-                    None => return, // Locked by API, skip this batch
-                };
+                // Acquire data lock (blocking, but we hold lease so we're next)
+                // This ensures no data loss and fairness is preserved
+                let mut term = self.term.lock_unfair();
 
-                // Process VTE sequences with transformed data
-                self.parser.advance(&mut *term, &transformed);
+                // Process VTE sequences with original data
+                // LineFeedNewLine mode (set in spawn()) handles LF→CRLF conversion
+                self.parser.advance(&mut *term, &data);
                 drop(term);
 
                 // Emit incremental update

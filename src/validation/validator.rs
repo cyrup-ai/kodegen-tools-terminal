@@ -272,11 +272,8 @@ impl ValidationEngine {
     /// // Note: parse_command is private, but used internally by validate()
     /// ```
     fn parse_command(&self, command: &str) -> ParsedCommand {
-        // Create CommandManager for parsing utilities
-        let cmd_manager = CommandManager::new();
-
-        // Extract base command using CommandManager's robust logic
-        let base_command = cmd_manager.get_base_command(command);
+        // Use CommandManager's static method directly - no instance needed
+        let base_command = CommandManager::get_base_command(command);
 
         // Parse arguments by splitting on whitespace and skipping the first element
         let parts: Vec<&str> = command.split_whitespace().collect();

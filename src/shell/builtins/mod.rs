@@ -1,24 +1,14 @@
-mod sed;
 mod kgls_impl;
 mod ls;
 mod lsd;
-mod find;
-mod mv;
-mod chmod;
 mod chown;
-mod ln;
 mod kill;
 mod killall;
 mod pkill;
 
-pub use sed::SedCommand;
 pub use ls::LsCommand;
 pub use lsd::LsdCommand;
-pub use find::FindCommand;
-pub use mv::MvCommand;
-pub use chmod::ChmodCommand;
 pub use chown::ChownCommand;
-pub use ln::LnCommand;
 pub use kill::KillCommand;
 pub use killall::KillallCommand;
 pub use pkill::PkillCommand;

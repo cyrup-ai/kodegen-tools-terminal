@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tokio::sync::broadcast;
 use alacritty_terminal::grid::Dimensions;
 
-use crate::validation::ValidationDecision;
+use crate::validation::{ValidationDecision, CommandManager};
 use kodegen_mcp_schema::ToolExecutionContext;
 
 /// Internal result type for terminal command execution
@@ -41,16 +41,8 @@ pub struct Terminal {
     /// JoinHandle for VteProcessor thread
     pub(super) vte_join_handle: Option<tokio::task::JoinHandle<()>>,
 
-    /// Pre-subscribed receiver for TerminalBuffer events (subscribed in builder)
-    /// Kept alive to prevent broadcast channel from dropping events before subscribers exist
-    #[allow(dead_code)]
-    pub(super) buffer_rx: tokio::sync::Mutex<broadcast::Receiver<super::TerminalBuffer>>,
-
     /// New validation engine for context-aware command validation
     pub(super) validation_engine: crate::validation::ValidationEngine,
-
-    /// Command parsing utilities (kept for parsing, validation moved to ValidationEngine)
-    pub(super) command_manager: crate::validation::CommandManager,
 }
 
 
@@ -65,7 +57,7 @@ impl Terminal {
     /// Subscribe to terminal buffer updates
     ///
     /// Creates a new subscription to the TerminalBuffer broadcast channel.
-    /// The Terminal holds an initial subscription (created in builder) to prevent event loss.
+    /// Each subscription will receive events sent after the call to subscribe().
     #[must_use]
     pub fn subscribe_buffer(&self) -> Option<broadcast::Receiver<super::TerminalBuffer>> {
         self.vte_handle.as_ref().map(|h| h.buffer_tx.subscribe())
@@ -85,6 +77,29 @@ impl Terminal {
             .map_err(|e| anyhow::anyhow!("Failed to send cancel signal: {}", e))?;
 
         log::info!("Sent cancel signal to KodegenInteractiveThread");
+        Ok(())
+    }
+
+    /// Send shutdown signals without requiring ownership
+    ///
+    /// This method is used when Arc::try_unwrap fails but we still need to cleanup resources.
+    /// Sends shutdown signals to both KodegenInteractive and VteProcessor threads.
+    /// The threads will exit when they receive these signals, cleaning up resources via RAII.
+    ///
+    /// Note: Cannot await JoinHandles without ownership, so cleanup is asynchronous.
+    /// Tokio will automatically cleanup tasks when they exit.
+    pub async fn force_shutdown_signals(&self) -> Result<(), anyhow::Error> {
+        let shell_handle = self.shell_handle.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
+
+        // Shutdown KodegenInteractive thread (kills PTY process)
+        shell_handle.command_tx.send(crate::pty::terminal::ExecuteCommand::Shutdown).await
+            .map_err(|e| anyhow::anyhow!("Failed to send ExecuteCommand::Shutdown: {}", e))?;
+
+        // Shutdown VteProcessor thread (frees VTE grid)
+        shell_handle.output_tx.send(crate::pty::terminal::ShellOutput::Shutdown)
+            .map_err(|e| anyhow::anyhow!("Failed to send ShellOutput::Shutdown: {}", e))?;
+
         Ok(())
     }
 
@@ -122,7 +137,7 @@ impl Terminal {
 
         match decision {
             ValidationDecision::Block { reason, violation_type } => {
-                let base_cmd = self.command_manager.get_base_command(&command);
+                let base_cmd = CommandManager::get_base_command(&command);
                 let duration_ms = start.elapsed().as_millis() as u64;
 
                 log::warn!(
@@ -165,9 +180,30 @@ impl Terminal {
 
         // Send cancel signal via channel to clear any potentially stuck command
         // The KodegenInteractiveThread will cancel the CancellationToken
-        if let Err(e) = shell_handle.cancel_tx.send(()).await {
-            log::warn!("Failed to send pre-execution cancel signal: {}", e);
-            // Continue anyway - channel may be full or closed
+        // Use try_send() for immediate failure detection (non-blocking)
+        match shell_handle.cancel_tx.try_send(()) {
+            Ok(()) => {
+                // Cancel signal sent successfully
+                log::debug!("Pre-execution cancel signal sent successfully");
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                // Channel full = 4 unprocessed cancel signals = shell is unresponsive
+                log::error!("Cancel channel full - shell thread is unresponsive (4 unprocessed signals)");
+                return Err(anyhow::anyhow!(
+                    "Terminal shell is unresponsive to cancel signals.\n\
+                     This indicates the shell thread is stuck or overloaded.\n\
+                     Use terminal action=KILL to terminate this terminal, then create a new one."
+                ));
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                // Channel closed = shell thread has exited
+                log::error!("Cancel channel closed - shell thread has terminated unexpectedly");
+                return Err(anyhow::anyhow!(
+                    "Terminal shell has terminated unexpectedly.\n\
+                     The shell thread is no longer running.\n\
+                     Use terminal action=KILL to clean up this terminal, then create a new one."
+                ));
+            }
         }
 
         // Clear entire grid if requested (BEFORE sending command)

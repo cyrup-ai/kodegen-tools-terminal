@@ -2,7 +2,7 @@ use kodegen_bash_shell::{Shell, builtin, openfiles, default_builtins, BuiltinSet
 use std::io;
 use std::path::PathBuf;
 
-use super::builtins::{SedCommand, LsCommand, LsdCommand, FindCommand, MvCommand, ChmodCommand, ChownCommand, LnCommand, KillCommand, KillallCommand, PkillCommand};
+use super::builtins::{LsCommand, LsdCommand, ChownCommand, KillCommand, KillallCommand, PkillCommand};
 
 #[derive(Clone)]
 pub struct KodegenShell {
@@ -14,17 +14,8 @@ impl KodegenShell {
         // Get default builtins
         let mut builtins = default_builtins(BuiltinSet::BashMode);
 
-        // Override sed to redirect to kodegen filesystem tools
-        builtins.insert("sed".to_string(), builtin::<SedCommand>());
-
-        // Override find, mv to redirect to kodegen filesystem tools
-        builtins.insert("find".to_string(), builtin::<FindCommand>());
-        builtins.insert("mv".to_string(), builtin::<MvCommand>());
-
-        // Override chmod, chown, ln - educational builtins (no MCP replacements)
-        builtins.insert("chmod".to_string(), builtin::<ChmodCommand>());
+        // Override chown - educational builtin (no MCP replacement)
         builtins.insert("chown".to_string(), builtin::<ChownCommand>());
-        builtins.insert("ln".to_string(), builtin::<LnCommand>());
 
         // Override kill, killall, pkill - redirect to process management tools
         builtins.insert("kill".to_string(), builtin::<KillCommand>());
@@ -76,17 +67,8 @@ impl KodegenShell {
         // Get default builtins
         let mut builtins = default_builtins(BuiltinSet::BashMode);
 
-        // Override sed to redirect to kodegen filesystem tools
-        builtins.insert("sed".to_string(), builtin::<SedCommand>());
-
-        // Override find, mv to redirect to kodegen filesystem tools
-        builtins.insert("find".to_string(), builtin::<FindCommand>());
-        builtins.insert("mv".to_string(), builtin::<MvCommand>());
-
-        // Override chmod, chown, ln - educational builtins (no MCP replacements)
-        builtins.insert("chmod".to_string(), builtin::<ChmodCommand>());
+        // Override chown - educational builtin (no MCP replacement)
         builtins.insert("chown".to_string(), builtin::<ChownCommand>());
-        builtins.insert("ln".to_string(), builtin::<LnCommand>());
 
         // Override kill, killall, pkill - redirect to process management tools
         builtins.insert("kill".to_string(), builtin::<KillCommand>());

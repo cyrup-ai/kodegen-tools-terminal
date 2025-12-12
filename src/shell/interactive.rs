@@ -231,8 +231,8 @@ impl KodegenInteractiveThread {
         let exit_code = if token.is_cancelled() {
             130u8
         } else {
-            // Default to 0 if command completed without explicit exit code
-            0u8
+            // Get actual exit code from shell's last_exit_status
+            *self.shell.shell_mut().last_exit_status_mut()
         };
 
         // Get current working directory from shell
@@ -264,10 +264,9 @@ impl KodegenInteractiveThread {
             data: prompt.into_bytes(),
         });
 
-        // Give a moment for output to be processed
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
         // Send completion event
+        // Note: No sleep needed - tokio::broadcast guarantees FIFO ordering
+        // See: https://docs.rs/tokio/latest/tokio/sync/broadcast/fn.channel.html
         let _ = self.output_tx.send(ShellOutput::ExecComplete {
             request_id,
             exit_code,

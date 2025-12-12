@@ -6,6 +6,7 @@
 
 use crate::validation::{ValidationDecision, ViolationType};
 use std::path::Path;
+use kodegen_config::KodegenConfig;
 
 /// System paths that are always restricted
 ///
@@ -211,6 +212,14 @@ impl PathAnalyzer {
 
     /// Check if path is in allowed directories
     ///
+    /// Allowed paths (in priority order):
+    /// 1. Explicit allowed prefixes (/tmp, /private/tmp)
+    /// 2. Git repository root (enables chmod +x for development scripts)
+    /// 3. User home directory
+    ///
+    /// This enables commands like `chmod +x script.sh` within a git repository
+    /// while still blocking `chmod 777 /etc/passwd` on system paths.
+    ///
     /// # Arguments
     ///
     /// * `path` - Canonical path string
@@ -219,9 +228,21 @@ impl PathAnalyzer {
     ///
     /// `true` if path is allowed, `false` otherwise
     fn is_allowed_path(&self, path: &str) -> bool {
-        // Check explicit allowed prefixes
+        // Check explicit allowed prefixes first (fastest)
         for allowed in ALLOWED_PATH_PREFIXES {
             if path.starts_with(allowed) {
+                return true;
+            }
+        }
+
+        // Check if path is within git repository root
+        // This enables chmod, etc. on project files during development
+        // local_config_dir() returns ${git_root}/.kodegen, so we get the parent
+        if let Ok(local_config) = KodegenConfig::local_config_dir()
+            && let Some(git_root) = local_config.parent()
+        {
+            let git_root_str = git_root.to_string_lossy();
+            if path.starts_with(git_root_str.as_ref()) {
                 return true;
             }
         }

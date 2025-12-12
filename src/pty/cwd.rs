@@ -106,6 +106,38 @@ mod windows {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 
+    // ============================================================================
+    // PEB OFFSET CONSTANTS (Architecture-Dependent)
+    // ============================================================================
+    
+    /// Offset of ProcessParameters field in PEB structure (64-bit Windows)
+    /// 
+    /// **Reference**: 
+    /// - Geoff Chappell: https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/api/pebteb/peb/index.htm
+    /// - Travis Mathison: https://www.travismathison.com/posts/PEB_TEB_TIB-Structure-Offsets/
+    /// 
+    /// **Stability**: This offset has been stable since Windows XP x64 through Windows 11.
+    /// Microsoft rarely changes PEB layout, but this is undocumented and subject to change.
+    #[cfg(target_pointer_width = "64")]
+    const PEB_PROCESS_PARAMS_OFFSET: usize = 0x20;
+
+    /// Offset of ProcessParameters field in PEB structure (32-bit Windows)
+    /// 
+    /// **Reference**: 
+    /// - Geoff Chappell: https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/api/pebteb/peb/index.htm
+    /// - Travis Mathison: https://www.travismathison.com/posts/PEB_TEB_TIB-Structure-Offsets/
+    /// 
+    /// **Stability**: This offset has been stable since Windows XP through Windows 10 32-bit.
+    #[cfg(target_pointer_width = "32")]
+    const PEB_PROCESS_PARAMS_OFFSET: usize = 0x10;
+
+    // Compile-time validation: only support known architectures
+    #[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
+    compile_error!(
+        "Windows CWD lookup only supports 32-bit and 64-bit platforms. \
+         PEB structure offsets are architecture-dependent and unknown for this platform."
+    );
+
     /// Get CWD on Windows by reading the PEB (Process Environment Block)
     pub fn get_cwd_windows(pid: u32) -> io::Result<PathBuf> {
         unsafe {
@@ -133,10 +165,11 @@ mod windows {
                 return Err(io::Error::from_raw_os_error(status));
             }
 
-            // Read ProcessParameters pointer from PEB
+            // Read ProcessParameters pointer from PEB using architecture-specific offset
+            // - 32-bit Windows: PEB + 0x10
+            // - 64-bit Windows: PEB + 0x20
             let mut process_params_ptr: *mut RTL_USER_PROCESS_PARAMETERS = ptr::null_mut();
-            let peb_offset = 0x20usize; // Offset of ProcessParameters in PEB
-            let peb_addr = (pbi.PebBaseAddress as usize + peb_offset) as *const _;
+            let peb_addr = (pbi.PebBaseAddress as usize + PEB_PROCESS_PARAMS_OFFSET) as *const _;
 
             if ReadProcessMemory(
                 handle,

@@ -133,16 +133,11 @@ impl TerminalBuilder {
             term_size,
         );
 
-        // Subscribe to TerminalBuffer events BEFORE any events can be emitted
-        let buffer_rx = vte_handle.buffer_tx.subscribe();
-
         // NEW: Create ValidationEngine with default rules
         let validation_engine = crate::validation::ValidationEngine::new();
         crate::validation::register_default_rules(&validation_engine);
 
-        // CommandManager provides parsing utilities only (validation is done by ValidationEngine)
-        let command_manager = crate::validation::CommandManager::new();
-
+        // CommandManager is now a utility with static methods - no instance needed
         log::info!("Terminal initialized with streaming + cancellation architecture (KodegenShell + VteProcessor)");
         log::info!("ValidationEngine initialized with default security rules");
 
@@ -152,9 +147,7 @@ impl TerminalBuilder {
             shell_join_handle: Some(shell_join_handle),
             vte_handle: Some(vte_handle),
             vte_join_handle: Some(vte_join_handle),
-            buffer_rx: tokio::sync::Mutex::new(buffer_rx),
             validation_engine,
-            command_manager,
         })
     }
 }
