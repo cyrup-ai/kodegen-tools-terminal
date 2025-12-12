@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_tools_terminal"
-version = "0.10.5"
+version = "0.10.6"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -104,6 +104,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Diagnostics_Debug",  # For ReadProcessMemory
 ]}
 ntapi = "0.4"               # For NtQueryInformationProcess and PEB structures
+
+[dev-dependencies]
+const_format = "0.2"
 
 [lib]
 name = "kodegen_tools_terminal"
