@@ -207,8 +207,10 @@ impl Terminal {
         }
 
         // Clear entire grid if requested (BEFORE sending command)
-        if clear && let Some(vte_handle) = self.vte_handle.as_ref() {
-            vte_handle.clear_grid();
+        if clear
+            && let Some(vte_handle) = self.vte_handle.as_ref()
+        {
+            vte_handle.clear_grid().await?;  // NOW ASYNC
         }
 
         // Subscribe to buffer events (creates new receiver from broadcast sender)
@@ -265,7 +267,7 @@ impl Terminal {
                             } else {
                                 &lines[..]
                             };
-                            final_output = output_lines.join("\n");
+                            final_output = output_lines.join("\r\n");
                             final_cwd = cwd;
                             final_exit_code = Some(exit_code);
                             if is_final {
@@ -329,18 +331,18 @@ impl Terminal {
     ) -> Result<TerminalCommandResult, anyhow::Error> {
         let start = std::time::Instant::now();
 
-        // Read grid directly from VteHandle - no broadcast channel
         let vte_handle = self.vte_handle.as_ref()
             .ok_or_else(|| anyhow::anyhow!("Terminal not initialized"))?;
 
-        let (lines, cwd, exit_code) = vte_handle.read_grid(tail);
-        let output = lines.join("\n");
+        // NOW ASYNC - no blocking!
+        let snapshot = vte_handle.read_grid(tail).await?;
+        let output = snapshot.lines.join("\r\n");
 
         Ok(TerminalCommandResult {
             terminal: Some(terminal_id),
             output,
-            exit_code,
-            cwd,
+            exit_code: snapshot.exit_code,
+            cwd: snapshot.cwd,
             duration_ms: start.elapsed().as_millis() as u64,
             completed: true, // READ operation itself is complete
             terminals: Vec::new(),

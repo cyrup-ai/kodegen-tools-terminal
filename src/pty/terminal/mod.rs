@@ -12,8 +12,6 @@ pub use types::{KeyCode, TermSize, Terminal, TerminalConfig, TerminalCommandResu
 mod events;
 pub use events::{ShellOutput, TerminalBuffer, ExecuteCommand};
 
-pub mod sync;
-
 mod event_bridge;
 pub(super) use event_bridge::EventBridge;
 

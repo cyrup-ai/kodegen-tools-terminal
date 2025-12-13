@@ -1,17 +1,56 @@
 //! VteProcessor thread - processes VTE sequences and maintains terminal grid
 
 use crate::pty::terminal::events::{ShellOutput, TerminalBuffer};
-use crate::pty::terminal::sync::FairMutex;
 use crate::pty::terminal::EventBridge;
 use alacritty_terminal::term::{Term, Config as AlacrittyConfig};
 use alacritty_terminal::term::cell::{Flags, LineLength};
 use alacritty_terminal::index::{Line, Column};
 use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
 use alacritty_terminal::term::cell::Cell;
-use vte::ansi::{ClearMode, Handler, Mode as AnsiMode, NamedMode};
+use vte::ansi::{ClearMode, Handler};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, oneshot};
+
+/// Request to read current grid state
+pub struct ReadGridRequest {
+    pub tail: u32,
+    pub response_tx: oneshot::Sender<GridSnapshot>,
+}
+
+/// Request to clear the grid
+pub struct ClearGridRequest {
+    pub response_tx: oneshot::Sender<()>,
+}
+
+/// Response containing grid state snapshot
+#[derive(Debug, Clone)]
+pub struct GridSnapshot {
+    pub lines: Vec<String>,
+    pub cwd: String,
+    pub exit_code: Option<i32>,
+}
+
+/// Normalize newlines: replace lone LF (\n) with CRLF (\r\n)
+///
+/// Since we don't use a real PTY (no ONLCR termios flag), the shell sends
+/// raw LF without CR. This function implements ONLCR-like behavior so the
+/// terminal cursor properly resets to column 0 on each newline.
+fn normalize_newlines(data: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(data.len() + data.len() / 10);
+    let mut prev_was_cr = false;
+
+    for &byte in data {
+        if byte == b'\n' && !prev_was_cr {
+            // Lone LF - add CR before it
+            result.push(b'\r');
+        }
+        result.push(byte);
+        prev_was_cr = byte == b'\r';
+    }
+
+    result
+}
 
 /// Extract lines from grid, trimming trailing whitespace from each line
 fn extract_lines_from_grid(grid: &Grid<Cell>) -> Vec<String> {
@@ -58,64 +97,64 @@ fn extract_lines_from_grid(grid: &Grid<Cell>) -> Vec<String> {
 }
 
 /// Handle to control the VteProcessor thread
+///
+/// NO FairMutex - all grid access goes through async channels
 pub struct VteHandle {
     pub buffer_tx: broadcast::Sender<TerminalBuffer>,
-    pub term: Arc<FairMutex<Term<EventBridge>>>,
+    /// Channel to request grid reads from VteProcessor
+    read_request_tx: mpsc::Sender<ReadGridRequest>,
+    /// Channel to request grid clears from VteProcessor
+    clear_request_tx: mpsc::Sender<ClearGridRequest>,
     pub current_cwd: Arc<RwLock<PathBuf>>,
     pub last_exit_code: Arc<RwLock<Option<i32>>>,
 }
 
 impl VteHandle {
-    /// Read current grid state directly (for READ/LIST actions)
+    /// Read current grid state via async channel (NO BLOCKING)
     ///
-    /// Returns (lines, cwd, exit_code) tuple with the current terminal buffer content,
-    /// working directory, and last known exit code.
-    pub fn read_grid(&self, tail: u32) -> (Vec<String>, String, Option<i32>) {
-        let term = self.term.lock_unfair();
-        let lines = extract_lines_from_grid(term.grid());
+    /// Sends request to VteProcessor, awaits response via oneshot channel.
+    /// VteProcessor handles request inline in its event loop.
+    pub async fn read_grid(&self, tail: u32) -> Result<GridSnapshot, anyhow::Error> {
+        let (response_tx, response_rx) = oneshot::channel();
 
-        // Apply tail limit
-        let output_lines = if tail > 0 && lines.len() > tail as usize {
-            lines[lines.len() - tail as usize..].to_vec()
-        } else {
-            lines
-        };
+        self.read_request_tx
+            .send(ReadGridRequest { tail, response_tx })
+            .await
+            .map_err(|_| anyhow::anyhow!("VteProcessor terminated - cannot read grid"))?;
 
-        // Get cwd from shared state
-        let cwd = self.current_cwd.read()
-            .map(|guard| guard.display().to_string())
-            .unwrap_or_else(|_| "/".to_string());
-
-        // Get last exit code from shared state
-        let exit_code = self.last_exit_code.read()
-            .map(|guard| *guard)
-            .unwrap_or(None);
-
-        (output_lines, cwd, exit_code)
+        response_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("VteProcessor dropped response channel"))
     }
 
-    /// Clear the entire grid (history + viewport + cursor)
-    ///
-    /// This ensures read_grid() returns a clean slate after clearing.
-    /// Used when the `clear` parameter is true before executing a command.
-    pub fn clear_grid(&self) {
-        let mut term = self.term.lock_unfair();
-        // Use clear_screen instead of grid reset - preserves terminal modes like LINE_FEED_NEW_LINE
-        // Order matters: All scrolls viewport to history, then Saved clears that history
-        term.clear_screen(ClearMode::All);    // Clear viewport (scrolls to history first)
-        term.clear_screen(ClearMode::Saved);  // Clear scrollback (including what was just scrolled)
+    /// Clear the entire grid via async channel (NO BLOCKING)
+    pub async fn clear_grid(&self) -> Result<(), anyhow::Error> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.clear_request_tx
+            .send(ClearGridRequest { response_tx })
+            .await
+            .map_err(|_| anyhow::anyhow!("VteProcessor terminated - cannot clear grid"))?;
+
+        response_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("VteProcessor dropped response channel"))
     }
 }
 
 /// VteProcessor thread implementation
 ///
-/// Owns its own Term exclusively. Subscribes to ShellOutput events,
-/// processes VTE sequences, extracts terminal buffer, emits TerminalBuffer events.
+/// OWNS Term exclusively - no shared FairMutex.
+/// Receives grid read/clear requests via mpsc channels.
 pub struct VteProcessorThread {
     parser: vte::ansi::Processor,
-    term: Arc<FairMutex<Term<EventBridge>>>,
+    term: Term<EventBridge>,  // OWNED directly, not Arc<FairMutex<...>>
     shell_output_rx: broadcast::Receiver<ShellOutput>,
     buffer_tx: broadcast::Sender<TerminalBuffer>,
+    /// Channel to receive grid read requests
+    read_request_rx: mpsc::Receiver<ReadGridRequest>,
+    /// Channel to receive grid clear requests
+    clear_request_rx: mpsc::Receiver<ClearGridRequest>,
     current_cwd: Arc<RwLock<PathBuf>>,
     last_exit_code: Arc<RwLock<Option<i32>>>,
 }
@@ -128,19 +167,19 @@ impl VteProcessorThread {
     ) -> (VteHandle, tokio::task::JoinHandle<()>) {
         let (buffer_tx, _) = broadcast::channel(1024);
 
-        // VteProcessor creates and owns its Term exclusively
+        // Create request channels
+        let (read_request_tx, read_request_rx) = mpsc::channel(32);
+        let (clear_request_tx, clear_request_rx) = mpsc::channel(8);
+
+        // VteProcessor OWNS its Term directly (no Arc, no FairMutex)
         let event_bridge = EventBridge::new(buffer_tx.clone());
         let alacritty_config = AlacrittyConfig {
             scrolling_history: term_size.scrollback,
             ..Default::default()
         };
-        let mut term = Term::new(alacritty_config, &term_size, event_bridge);
-
-        // Enable LINE_FEED_NEW_LINE mode so LF also does CR (like ONLCR in a real PTY)
-        // This ensures cursor resets to column 0 on newlines, matching expected terminal behavior
-        term.set_mode(AnsiMode::Named(NamedMode::LineFeedNewLine));
-
-        let term = Arc::new(FairMutex::new(term));
+        let term = Term::new(alacritty_config, &term_size, event_bridge);
+        // Note: We use normalize_newlines() to convert LF to CRLF before parsing
+        // LineFeedNewLine mode is unreliable because escape sequences can reset it
 
         let parser = vte::ansi::Processor::new();
         let current_cwd = Arc::new(RwLock::new(initial_cwd));
@@ -148,9 +187,11 @@ impl VteProcessorThread {
 
         let thread_impl = Self {
             parser,
-            term: term.clone(),
+            term,  // Owned directly
             shell_output_rx,
             buffer_tx: buffer_tx.clone(),
+            read_request_rx,
+            clear_request_rx,
             current_cwd: current_cwd.clone(),
             last_exit_code: last_exit_code.clone(),
         };
@@ -161,7 +202,8 @@ impl VteProcessorThread {
 
         let vte_handle = VteHandle {
             buffer_tx,
-            term,
+            read_request_tx,
+            clear_request_tx,
             current_cwd,
             last_exit_code,
         };
@@ -173,27 +215,70 @@ impl VteProcessorThread {
         log::debug!("VteProcessor task starting");
 
         loop {
-            log::debug!("VteProcessor: waiting for next event");
-            match self.shell_output_rx.recv().await {
-                Ok(ShellOutput::Shutdown) => {
-                    log::debug!("VteProcessor: received Shutdown event, exiting");
-                    break;
+            tokio::select! {
+                biased;
+
+                // Priority 1: Handle read requests (fast path for API)
+                Some(request) = self.read_request_rx.recv() => {
+                    self.handle_read_request(request);
                 }
-                Ok(event) => {
-                    log::debug!("VteProcessor: recv() returned an event");
-                    self.process_shell_output(event);
-                    log::debug!("VteProcessor: finished processing event");
+
+                // Priority 2: Handle clear requests
+                Some(request) = self.clear_request_rx.recv() => {
+                    self.handle_clear_request(request);
                 }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    log::warn!("VteProcessor lagged, skipped {} events", skipped);
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    log::debug!("VteProcessor: channel closed, exiting");
-                    break;
+
+                // Priority 3: Process shell output
+                result = self.shell_output_rx.recv() => {
+                    match result {
+                        Ok(ShellOutput::Shutdown) => {
+                            log::debug!("VteProcessor: received Shutdown event, exiting");
+                            break;
+                        }
+                        Ok(event) => {
+                            self.process_shell_output(event);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            log::warn!("VteProcessor lagged, skipped {} events", skipped);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            log::debug!("VteProcessor: channel closed, exiting");
+                            break;
+                        }
+                    }
                 }
             }
         }
         log::debug!("VteProcessor task stopping");
+    }
+
+    /// Handle a grid read request - NO LOCK, we own the Term
+    fn handle_read_request(&self, request: ReadGridRequest) {
+        let lines = extract_lines_from_grid(self.term.grid());
+
+        // Apply tail limit
+        let lines = if request.tail > 0 && lines.len() > request.tail as usize {
+            lines[lines.len() - request.tail as usize..].to_vec()
+        } else {
+            lines
+        };
+
+        let cwd = self.current_cwd.read()
+            .map(|guard| guard.display().to_string())
+            .unwrap_or_else(|_| "/".to_string());
+
+        let exit_code = self.last_exit_code.read()
+            .map(|guard| *guard)
+            .unwrap_or(None);
+
+        let _ = request.response_tx.send(GridSnapshot { lines, cwd, exit_code });
+    }
+
+    /// Handle a grid clear request - NO LOCK, we own the Term
+    fn handle_clear_request(&mut self, request: ClearGridRequest) {
+        self.term.clear_screen(ClearMode::All);
+        self.term.clear_screen(ClearMode::Saved);
+        let _ = request.response_tx.send(());
     }
 
     fn process_shell_output(&mut self, event: ShellOutput) {
@@ -202,37 +287,26 @@ impl VteProcessorThread {
             ShellOutput::Bytes { request_id, data } => {
                 log::debug!("VteProcessor: processing {} bytes for request_id={:?}", data.len(), request_id);
 
-                // Reserve fairness lock (prevents API starvation)
-                let _lease = self.term.lease();
+                // Convert LF to CRLF so cursor returns to column 0 on newlines
+                let normalized = normalize_newlines(&data);
 
-                // Acquire data lock (blocking, but we hold lease so we're next)
-                // This ensures no data loss and fairness is preserved
-                let mut term = self.term.lock_unfair();
-
-                // Process VTE sequences with original data
-                // LineFeedNewLine mode (set in spawn()) handles LF→CRLF conversion
-                self.parser.advance(&mut *term, &data);
-                drop(term);
+                // NO LOCK NEEDED - we own self.term exclusively
+                self.parser.advance(&mut self.term, &normalized);
 
                 // Emit incremental update
                 self.emit_buffer_update(request_id, 0, false);
             }
             ShellOutput::ExecComplete { request_id, exit_code, cwd } => {
                 log::debug!("VteProcessor: ExecComplete for request_id={:?}, exit_code={}", request_id, exit_code);
-                // Update CWD tracking (write to shared RwLock)
                 if let Ok(mut cwd_guard) = self.current_cwd.write() {
                     *cwd_guard = cwd;
                 }
-                // Update exit code tracking (write to shared RwLock)
                 if let Ok(mut exit_guard) = self.last_exit_code.write() {
                     *exit_guard = Some(exit_code as i32);
                 }
-
-                // Emit final update with is_final=true
                 self.emit_buffer_update(request_id, exit_code as i32, true);
             }
             ShellOutput::Shutdown => {
-                // This is already handled in run() loop, should never reach here
                 log::warn!("VteProcessor: received Shutdown in process_shell_output (should be handled in run loop)");
             }
         }
@@ -240,20 +314,15 @@ impl VteProcessorThread {
 
     fn emit_buffer_update(&self, request_id: rmcp::model::RequestId, exit_code: i32, is_final: bool) {
         log::debug!("VteProcessor: emit_buffer_update request_id={:?}, exit_code={}, is_final={}", request_id, exit_code, is_final);
-        // Acquire unfair lock for reading grid (like Alacritty does)
-        let term = self.term.lock_unfair();
-        let lines = extract_lines_from_grid(term.grid());
 
-        // Get cursor position
-        let cursor = term.grid().cursor.point;
-        drop(term);
+        // NO LOCK NEEDED - we own self.term exclusively
+        let lines = extract_lines_from_grid(self.term.grid());
+        let cursor = self.term.grid().cursor.point;
 
-        // Read current cwd from shared state
         let cwd = self.current_cwd.read()
             .map(|guard| guard.clone())
             .unwrap_or_else(|_| PathBuf::from("/"));
 
-        // Emit TerminalBuffer::Updated event
         let _ = self.buffer_tx.send(TerminalBuffer::Updated {
             request_id,
             lines,
